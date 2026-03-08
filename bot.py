@@ -2227,6 +2227,79 @@ def cmd_help(m):
 # ══════════════════════════════════════════════════════════════
 #  رفع الملفات
 # ══════════════════════════════════════════════════════════════
+def _send_scan_report(m, fname: str, deep: dict, config: dict, fsize: int,
+                      scan_only: bool = False, admin_only: bool = False):
+    """إرسال تقرير الفحص الأمني بشكل احترافي"""
+    verdict  = deep.get("verdict", "SAFE")
+    score    = deep.get("score", 0)
+    entropy  = deep.get("entropy", 0.0)
+    hash_md5 = deep.get("hash_md5", "")
+    layers   = deep.get("layers", [])
+    dangers  = deep.get("dangers", [])
+    warnings = deep.get("warnings", [])
+    uid      = str(m.from_user.id)
+
+    verdict_icon = {
+        "SAFE":    "✅ آمن تماماً",
+        "WARNING": "🟡 تحذيرات طفيفة",
+        "DANGER":  "🟠 خطر متوسط",
+        "CRITICAL":"🔴 خطر حرج",
+    }.get(verdict, "✅ آمن")
+
+    danger_lines = ""
+    for desc, sev in dangers[:6]:
+        icon = "🔴" if sev == "CRITICAL" else "🟠" if sev == "HIGH" else "🟡"
+        danger_lines += f"  {icon} {desc}\n"
+
+    warn_lines = ""
+    for w in warnings[:3]:
+        warn_lines += f"  ⚠️ {w}\n"
+
+    bot_info = ""
+    if config:
+        tok_icon = "✅" if config.get("has_token") else "❌"
+        adm_icon = "✅" if config.get("has_admin") else "❌"
+        tok_val  = str(config.get("token_val") or "غير موجود")[:30]
+        adm_val  = str(config.get("admin_val") or "غير موجود")
+        bot_info = (
+            f"\n🤖 *إعدادات البوت:*\n"
+            f"  {tok_icon} التوكن: `{tok_val}`\n"
+            f"  {adm_icon} الأدمن ID: `{adm_val}`\n"
+        )
+        if config.get("suggestions"):
+            bot_info += "  💡 " + " | ".join(config["suggestions"][:3]) + "\n"
+
+    libs_txt = ""
+    if deep.get("to_install"):
+        libs_txt = f"\n📦 *مكاتب للتثبيت:* `{', '.join(deep['to_install'][:5])}`\n"
+
+    hash_short = (hash_md5[:16] + "...") if len(hash_md5) > 16 else hash_md5
+
+    text = (
+        f"{'🔎 تقرير الفحص فقط' if scan_only else '✅ تم الرفع'}: `{fname}`\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 الحجم: `{fsize//1024} KB` | 🔬 طبقات: `{len(layers)}`\n"
+        f"🔐 MD5: `{hash_short}`\n"
+        f"📊 Entropy: `{entropy}` | 🎯 نقاط الخطر: `{score}`\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"🛡 الحكم: *{verdict_icon}*\n"
+        f"{danger_lines}"
+        f"{warn_lines}"
+        f"{bot_info}"
+        f"{libs_txt}"
+    )
+
+    if admin_only:
+        try:
+            bot.send_message(ADMIN_ID, "⚠️ " + text, parse_mode="Markdown")
+        except: pass
+        return
+
+    config_safe = config if config else {}
+    markup = kb_file_upload(fname, uid, config_safe) if is_staff(uid) else kb_file_user_upload(fname)
+    bot.reply_to(m, text, parse_mode="Markdown", reply_markup=markup)
+
+
 @bot.message_handler(content_types=['document'])
 def handle_upload(m):
     uid  = reg_user(m)
