@@ -7,6 +7,18 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from collections import defaultdict
 
+# ── تسريع فائق — uvloop (إذا متاح) ─────────────────────────
+try:
+    import asyncio
+
+except ImportError:
+    pass
+
+# ── تسريع Python GC ─────────────────────────────────────────
+import gc
+gc.set_threshold(50000, 500, 100)
+
+
 # ══════════════════════════════════════════════════════════════
 #  السجل
 # ══════════════════════════════════════════════════════════════
@@ -24,12 +36,34 @@ log = logging.getLogger("ELITE")
 # ══════════════════════════════════════════════════════════════
 #  الإعدادات
 # ══════════════════════════════════════════════════════════════
-TOKEN     = os.environ.get("TOKEN", "8675185329:AAEjB2PoLaqfxl9FDxI_cKkJHu-3xfKOMbM")
-ADMIN_ID  = int(os.environ.get("ADMIN_ID", "6918240643"))
-ADMIN_IDS = [int(x) for x in os.environ.get("ADMIN_IDS", "6918240643").split(",")]
+TOKEN     = os.environ.get("TOKEN",     "8666688172:AAGzjvAwltjYABuukmFlnQVrxFkKV7jRC3k")
+ADMIN_ID  = int(os.environ.get("ADMIN_ID",  "8665373093"))
+ADMIN_IDS = [int(x) for x in os.environ.get("ADMIN_IDS", "8665373093,8206539702").split(",")]
 
-bot      = telebot.TeleBot(TOKEN, threaded=True, num_threads=160)
-executor = ThreadPoolExecutor(max_workers=160)
+bot      = telebot.TeleBot(
+    TOKEN,
+    threaded      = True,
+    num_threads   = 200,           # ↑ زيادة عدد الـ threads
+    skip_pending  = True,          # تخطي الرسائل القديمة عند البدء
+)
+executor = ThreadPoolExecutor(
+    max_workers  = 200,
+    thread_name_prefix = "elite_worker"
+)
+
+# ── cache سريع للـ keyboard (يمنع إعادة البناء في كل طلب) ──
+_kb_cache: dict = {}
+
+def _cached_kb(uid: str):
+    role = get_role(uid)
+    if role not in _kb_cache:
+        _kb_cache[role] = {
+            "owner": kb_owner, "admin": kb_admin,
+            "vip": kb_vip, "user": kb_user,
+        }.get(role, kb_user)()
+    return _kb_cache[role]
+
+
 BOT_START_TIME = time.time()
 
 # ══════════════════════════════════════════════════════════════
@@ -127,6 +161,27 @@ SPAM_BAN_TIME     = 60
 UPLOAD_LIMIT      = 5
 UPLOAD_WINDOW     = 60
 MAX_FAILED_CMDS   = 10
+
+# ── Cache فائق السرعة لتسريع الاستجابة ──────────────────────
+_response_cache: dict = {}          # cache للردود المتكررة
+_cache_ttl:      dict = {}          # وقت انتهاء الـ cache
+CACHE_SECONDS         = 30          # كل 30 ثانية يتجدد الـ cache
+
+def _cache_get(key: str):
+    if key in _response_cache:
+        if time.time() < _cache_ttl.get(key, 0):
+            return _response_cache[key]
+        del _response_cache[key]
+    return None
+
+def _cache_set(key: str, val, ttl: int = CACHE_SECONDS):
+    _response_cache[key] = val
+    _cache_ttl[key]      = time.time() + ttl
+
+# ── Lock خفيف للعمليات المتزامنة ────────────────────────────
+_db_lock = threading.RLock()
+
+
 
 # ══ نظام الأمان المتقدم ══════════════════════════
 SECURITY_LOG     = []
@@ -493,44 +548,528 @@ def reg_user(m):
 #  فاحص الملفات
 # ══════════════════════════════════════════════════════════════
 # ── أنماط الخطر الحقيقي فقط (مش كل حاجة) ──
+
+# ══════════════════════════════════════════════════════════════
+#  🛡 ELITE SECURITY ENGINE v3.0 — محرك الفحص الأمني المتقدم
+# ══════════════════════════════════════════════════════════════
+
+# ── نظام التحذيرات والحظر التلقائي ─────────────────────────
+# warning_count[uid] = تحذيرات متبقية  (يبدأ من MAX_WARNINGS وينزل لـ 0 → حظر)
+warning_count: dict  = {}
+MAX_WARNINGS         = 3   # يبدأ من 3 وينزل — لما يوصل 0 حظر فوري
+
+# ── تصنيفات مستوى الخطورة ────────────────────────────────────
+SEV_CRITICAL = "CRITICAL"   # حظر فوري بدون تحذير
+SEV_HIGH     = "HIGH"       # تحذير + قد يؤدي للحظر
+SEV_MEDIUM   = "MEDIUM"     # تحذير فقط
+
+# ── قائمة الأنماط الخطيرة الشاملة ────────────────────────────
+# كل عنصر: (regex, وصف, مستوى_الخطورة)
 DANGER_PATTERNS = [
-    # حذف ملفات
-    (r"os\.system\s*\(['\"]?\s*rm\s+-rf",        "حذف ملفات النظام بـ os.system"),
-    (r"shutil\.rmtree\s*\(['\"]?/",              "حذف مجلد جذر النظام"),
-    # تنفيذ كود مشفر
-    (r"eval\s*\(\s*base64",                      "تنفيذ كود مشفر base64"),
-    (r"exec\s*\(\s*base64",                      "تنفيذ كود مشفر base64"),
-    (r"exec\s*\(\s*__import__",                  "تنفيذ كود ديناميكي خطير"),
-    (r"compile\s*\(.*exec",                      "تجميع وتنفيذ كود خطير"),
-    # استيراد مخفي
-    (r"__import__\s*\(['\"]os['\"]",             "استيراد os بشكل مخفي"),
-    (r"__import__\s*\(['\"]subprocess",          "استيراد subprocess بشكل مخفي"),
-    (r"importlib\.import_module.*subprocess",    "استيراد subprocess ديناميكي"),
+
+    # ════ CRITICAL — حظر فوري ════════════════════════════════
+
+    # Reverse/Bind Shell
+    (r"reverse.?shell|bind.?shell|bash\s+-i\s+>&",
+     "reverse shell / bind shell", SEV_CRITICAL),
+    (r"socket\.connect.*(?:4444|1337|31337|9001|6666)",
+     "اتصال بمنفذ Hacker مشهور", SEV_CRITICAL),
+    (r"\/bin\/sh|\/bin\/bash.*-[ic]|cmd\.exe.*\/c",
+     "تنفيذ shell مباشر", SEV_CRITICAL),
+    (r"pty\.spawn|os\.execve.*sh|subprocess.*shell\s*=\s*True.*(?:rm|del|format|mkfs)",
+     "shell=True مع أوامر خطيرة", SEV_CRITICAL),
+
+    # Ransomware
+    (r"Fernet.*(?:encrypt|key).*os\.walk",
+     "تشفير ملفات (Ransomware)", SEV_CRITICAL),
+    (r"AES.*encrypt.*os\.(?:listdir|walk)",
+     "تشفير ملفات بـ AES (Ransomware)", SEV_CRITICAL),
+    (r"\.enc\b.*open.*wb.*for.*os\.walk",
+     "تشفير وحفظ ملفات (Ransomware)", SEV_CRITICAL),
+
     # Fork Bomb
-    (r"fork\s*\(\s*\).*while",                   "fork bomb محتمل"),
-    (r"while\s+True\s*:\s*\n\s*(os\.fork|subprocess)", "fork bomb loop"),
-    (r"os\.fork\(\).*os\.fork\(\)",             "fork bomb مزدوج"),
-    # تعدين
-    (r"cryptominer|xmrig|minerd|stratum\+tcp",   "تعدين عملات مشفرة"),
-    (r"hashlib\.sha256.*nonce.*target",          "خوارزمية تعدين"),
-    # قواعد بيانات
-    (r"(DROP\s+TABLE|DELETE\s+FROM.*WHERE\s+1=1)", "حذف قاعدة بيانات"),
-    (r"TRUNCATE\s+TABLE",                         "تفريغ جدول قاعدة بيانات"),
-    # ملفات النظام
-    (r"(\/etc\/passwd|\/etc\/shadow)",           "الوصول لملفات النظام الحساسة"),
-    (r"(\/proc\/self|\/sys\/kernel)",            "الوصول لنواة النظام"),
-    # تجسس
-    (r"keylog|keystroke|pynput.*Listener",       "كيلوجر / تتبع لوحة المفاتيح"),
-    (r"screenshot.*loop|mss.*grab.*while",       "تقاط صور متكررة"),
-    (r"cv2\.VideoCapture\(0\).*while",           "تشغيل الكاميرا سرياً"),
-    # شبكة خطيرة
-    (r"reverse.?shell|bind.?shell",              "reverse shell"),
-    (r"socket\.connect.*4444|socket\.connect.*1337", "اتصال بمنفذ مشبوه"),
-    (r"paramiko.*exec_command.*rm\s+-rf",        "أوامر خطيرة عبر SSH"),
-    # رانسوموير
-    (r"Fernet.*encrypt.*os\.walk",               "تشفير ملفات (ransomware محتمل)"),
-    (r"AES.*encrypt.*os\.listdir",               "تشفير ملفات (ransomware محتمل)"),
+    (r"os\.fork\s*\(\s*\).*os\.fork\s*\(\s*\)",
+     "Fork Bomb مزدوج", SEV_CRITICAL),
+    (r"while\s+(?:True|1)\s*:.*os\.fork",
+     "Fork Bomb في حلقة لا نهائية", SEV_CRITICAL),
+
+    # حذف نظام
+    (r"os\.system\s*\(['\"]?\s*rm\s+-rf\s+/",
+     "حذف root النظام بـ rm -rf /", SEV_CRITICAL),
+    (r"shutil\.rmtree\s*\(['\"]?\s*/(?:etc|var|usr|home|root)",
+     "حذف مجلدات حيوية بـ shutil", SEV_CRITICAL),
+    (r"format\s+[cCdD]:|del\s+/[fFsS]\s+/[qQ]\s+[cCdD]:",
+     "تهيئة أو حذف القرص (Windows)", SEV_CRITICAL),
+
+    # Token Stealer
+    (r"(?:discord|telegram|slack).*token.*(?:requests|urllib|http)",
+     "سرقة توكنات (Token Stealer)", SEV_CRITICAL),
+    (r"(?:localStorage|sessionStorage).*token.*(?:fetch|XMLHttpRequest)",
+     "سرقة بيانات المتصفح", SEV_CRITICAL),
+    (r"re\.findall.*[A-Za-z0-9_-]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27}",
+     "استخراج Discord Token بـ regex", SEV_CRITICAL),
+
+    # Crypto Miner
+    (r"xmrig|minerd|stratum\+(?:tcp|ssl)://",
+     "تعدين عملات مشفرة (XMRig)", SEV_CRITICAL),
+    (r"cryptominer|nicehash|pool\.minexmr",
+     "برنامج تعدين", SEV_CRITICAL),
+    (r"hashlib\.sha256.*nonce.*target.*difficulty",
+     "خوارزمية Proof-of-Work للتعدين", SEV_CRITICAL),
+
+    # Self-Replication / Worm
+    (r"shutil\.copy.*__file__.*(?:startup|autorun|AppData)",
+     "نسخ نفسه للـ Startup (Worm)", SEV_CRITICAL),
+    (r"glob\.glob.*\.py.*open.*write.*open.*read.*__file__",
+     "تكاثر ذاتي في ملفات Python", SEV_CRITICAL),
+
+    # ════ HIGH — تحذير شديد ══════════════════════════════════
+
+    # Keylogger
+    (r"pynput.*(?:Listener|keyboard|mouse)",
+     "Keylogger بـ pynput", SEV_HIGH),
+    (r"GetAsyncKeyState|SetWindowsHookEx|WH_KEYBOARD",
+     "Keylogger بـ WinAPI", SEV_HIGH),
+    (r"keylog|keystroke|key_press.*log",
+     "تسجيل ضغطات لوحة المفاتيح", SEV_HIGH),
+
+    # Stealer — سرقة بيانات
+    (r"(?:os\.path\.join|glob).*(?:\.ssh|id_rsa|known_hosts)",
+     "قراءة مفاتيح SSH الخاصة", SEV_HIGH),
+    (r"(?:os\.path\.join|glob).*(?:cookies\.sqlite|Login\s*Data|wallet\.dat)",
+     "سرقة كوكيز أو بيانات تسجيل دخول", SEV_HIGH),
+    (r"HKEY_CURRENT_USER.*(?:Software\\Google|Software\\Discord)",
+     "قراءة Registry لسرقة بيانات", SEV_HIGH),
+    (r"win32crypt\.CryptUnprotectData",
+     "فك تشفير كلمات مرور Chrome/Edge", SEV_HIGH),
+    (r"sqlite3.*(?:Login\s*Data|Cookies|Web\s*Data)",
+     "استخراج بيانات المتصفح من SQLite", SEV_HIGH),
+
+    # Backdoor
+    (r"exec\s*\(\s*(?:requests|urllib).*\.(?:get|post|read)\s*\(",
+     "تنفيذ كود مُحمَّل من الإنترنت (Backdoor)", SEV_HIGH),
+    (r"eval\s*\(\s*(?:base64\.b64decode|zlib\.decompress)",
+     "تنفيذ كود مشفر أو مضغوط (Obfuscated)", SEV_HIGH),
+    (r"exec\s*\(\s*base64|exec\s*\(\s*__import__",
+     "تنفيذ كود مشفر Base64", SEV_HIGH),
+    (r"compile\s*\(.*exec\s*\(",
+     "تجميع وتنفيذ كود ديناميكي", SEV_HIGH),
+
+    # Remote Access / C2
+    (r"(?:paramiko|fabric).*(?:exec_command|run).*(?:rm|del|format|wget|curl)",
+     "أوامر خطيرة عبر SSH", SEV_HIGH),
+    (r"socket\.socket.*SOCK_(?:STREAM|RAW).*(?:bind|listen|connect).*(?:while|loop)",
+     "Server/Listener مشبوه", SEV_HIGH),
+    (r"(?:ftplib|smtplib).*(?:sendmail|storbinary).*(?:os\.environ|passwd|token)",
+     "إرسال بيانات حساسة عبر FTP/SMTP", SEV_HIGH),
+
+    # Privilege Escalation
+    (r"ctypes.*(?:windll|cdll).*(?:ShellExecute|CreateProcess).*runas",
+     "رفع الصلاحيات (UAC Bypass)", SEV_HIGH),
+    (r"subprocess.*(?:sudo|runas|pkexec).*(?:chmod|chown|passwd)",
+     "محاولة رفع صلاحيات (sudo/runas)", SEV_HIGH),
+
+    # Process Injection
+    (r"ctypes\.windll\.kernel32\.(?:WriteProcessMemory|CreateRemoteThread|VirtualAllocEx)",
+     "Process Injection بـ WinAPI", SEV_HIGH),
+    (r"OpenProcess.*PROCESS_ALL_ACCESS",
+     "فتح عملية بكل الصلاحيات", SEV_HIGH),
+
+    # Webcam / Microphone
+    (r"cv2\.VideoCapture\s*\(\s*0\s*\).*while",
+     "تسجيل فيديو من الكاميرا سراً", SEV_HIGH),
+    (r"pyaudio.*stream.*read.*open.*wb",
+     "تسجيل صوت من الميكروفون سراً", SEV_HIGH),
+    (r"sounddevice\.rec|soundfile\.write.*rec",
+     "تسجيل صوت مشبوه", SEV_HIGH),
+
+    # Screenshot Loop
+    (r"(?:mss|PIL\.ImageGrab|pyautogui).*(?:grab|screenshot).*(?:while|sleep\()",
+     "لقطات شاشة متكررة", SEV_HIGH),
+
+    # Obfuscation
+    (r"zlib\.decompress\s*\(\s*base64\.b64decode",
+     "كود مشفر ومضغوط (Obfuscation)", SEV_HIGH),
+    (r"marshal\.loads|pickle\.loads.*base64",
+     "كود متحول خطير (Marshal/Pickle)", SEV_HIGH),
+    (r"(?:chr\(\d+\)\s*\+\s*){10,}",
+     "كود مبعثر بـ chr() (Obfuscation)", SEV_HIGH),
+    (r"\\x[0-9a-fA-F]{2}(?:\\x[0-9a-fA-F]{2}){15,}",
+     "كود hex مشفر طويل", SEV_HIGH),
+
+    # Hidden Import
+    (r"__import__\s*\(['\"](?:os|subprocess|socket|ctypes)['\"]",
+     "استيراد مخفي لمكتبة خطيرة", SEV_HIGH),
+    (r"importlib\.import_module\s*\(['\"](?:os|subprocess|socket)['\"]",
+     "استيراد ديناميكي لمكتبة خطيرة", SEV_HIGH),
+
+    # System Files
+    (r"(?:open|read).*(?:/etc/(?:passwd|shadow|sudoers)|/root/\.(?:ssh|bash_history))",
+     "قراءة ملفات نظام حساسة", SEV_HIGH),
+    (r"(?:/proc/self/mem|/dev/mem|/dev/kmem)",
+     "وصول مباشر لذاكرة النظام", SEV_HIGH),
+
+    # ════ MEDIUM — تحذير ════════════════════════════════════
+
+    # shell=True عام (بدون أوامر خطيرة)
+    (r"subprocess\.[A-Za-z_]+\s*\(.*shell\s*=\s*True",
+     "shell=True — خطر تنفيذ أوامر", SEV_MEDIUM),
+
+    # Database Destruction
+    (r"DROP\s+(?:TABLE|DATABASE|SCHEMA)\s+",
+     "حذف قاعدة بيانات", SEV_MEDIUM),
+    (r"DELETE\s+FROM\s+\w+\s+WHERE\s+1\s*=\s*1",
+     "حذف كل البيانات من جدول", SEV_MEDIUM),
+    (r"TRUNCATE\s+TABLE",
+     "تفريغ جدول قاعدة بيانات", SEV_MEDIUM),
+
+    # Suspicious Network
+    (r"(?:requests|urllib|httpx)\.(?:get|post)\s*\(.*(?:password|token|secret|key)=",
+     "إرسال بيانات حساسة عبر HTTP", SEV_MEDIUM),
+    (r"(?:pastebin\.com|hastebin\.com|dpaste\.com)",
+     "إرسال بيانات لـ Pastebin", SEV_MEDIUM),
+    (r"(?:ngrok|serveo|localhost\.run)",
+     "tunnel مشبوه (ngrok/serveo)", SEV_MEDIUM),
+
+    # Env Stealing
+    (r"os\.environ.*(?:TOKEN|PASSWORD|SECRET|API_KEY|PRIVATE)",
+     "قراءة متغيرات بيئة حساسة لإرسالها", SEV_MEDIUM),
+
+    # Autostart
+    (r"(?:HKEY_CURRENT_USER|HKLM).*(?:Run|RunOnce).*(?:reg\s+add|winreg)",
+     "إضافة للـ Autostart في Registry", SEV_MEDIUM),
+    (r"(?:crontab|/etc/rc\.local|systemd.*enable)",
+     "تسجيل تشغيل تلقائي", SEV_MEDIUM),
 ]
+
+# ── فحص AST (Abstract Syntax Tree) ─────────────────────────
+def _ast_deep_scan(content: str) -> list:
+    """فحص بنية الكود بـ AST — يكشف الأنماط المخفية"""
+    issues = []
+    try:
+        import ast as _ast
+        tree = _ast.parse(content)
+        for node in _ast.walk(tree):
+            # exec/eval بأي شكل
+            if isinstance(node, _ast.Call):
+                func_name = ""
+                if isinstance(node.func, _ast.Name):
+                    func_name = node.func.id
+                elif isinstance(node.func, _ast.Attribute):
+                    func_name = node.func.attr
+                if func_name in ("exec", "eval", "compile"):
+                    # تحقق لو الـ argument مش string مباشر
+                    if node.args and not isinstance(node.args[0], _ast.Constant):
+                        issues.append((f"{func_name}() بمتغير ديناميكي — تنفيذ كود مجهول", SEV_HIGH))
+            # os.system بأي شكل
+            if isinstance(node, _ast.Call):
+                if (isinstance(node.func, _ast.Attribute) and
+                    node.func.attr in ("system","popen","execv","execve","spawnl")):
+                    issues.append((f"استدعاء {node.func.attr}() — تنفيذ أوامر نظام", SEV_MEDIUM))
+    except SyntaxError:
+        issues.append(("خطأ Syntax في الملف — قد يكون مشفراً", SEV_MEDIUM))
+    except Exception:
+        pass
+    return issues
+
+# ── فحص الـ Hash ضد قاعدة بيانات Malware معروفة ────────────
+KNOWN_MALWARE_HASHES = {
+    # MD5 hashes لملفات ضارة معروفة (نماذج — يمكن توسيعها)
+    "44d88612fea8a8f36de82e1278abb02f",  # EICAR test
+    "69630e4574ec6798239b091cda43dca0",  # EICAR variant
+}
+
+def _hash_check(raw: bytes) -> tuple:
+    """فحص الـ MD5 ضد قاعدة بيانات Malware"""
+    import hashlib
+    md5  = hashlib.md5(raw).hexdigest()
+    sha1 = hashlib.sha1(raw).hexdigest()
+    if md5 in KNOWN_MALWARE_HASHES:
+        return True, f"MD5 مطابق لـ Malware معروف: {md5}"
+    return False, md5
+
+# ── فحص الـ Entropy (كشف التشفير/التعبئة) ──────────────────
+def _entropy_check(content: str) -> float:
+    """Shannon Entropy — قيمة عالية = كود مشفر/مضغوط"""
+    import math
+    if not content:
+        return 0.0
+    freq = {}
+    for c in content:
+        freq[c] = freq.get(c, 0) + 1
+    length = len(content)
+    entropy = -sum((f/length)*math.log2(f/length) for f in freq.values())
+    return round(entropy, 2)
+
+# ── الفحص الشامل الرئيسي ────────────────────────────────────
+def deep_scan_file(path: str, raw: bytes = None) -> dict:
+    """
+    🛡 ELITE DEEP SCAN — فحص شامل متعدد الطبقات
+    يرجع dict فيه:
+      verdict:   SAFE | WARNING | DANGER | CRITICAL
+      dangers:   [(وصف, مستوى)]
+      warnings:  [وصف]
+      entropy:   float
+      hash_md5:  str
+      imports:   [str]
+      to_install:[str]
+      score:     int  (0=آمن, كلما ارتفع كلما زاد الخطر)
+    """
+    result = {
+        "verdict":    "SAFE",
+        "dangers":    [],
+        "warnings":   [],
+        "entropy":    0.0,
+        "hash_md5":   "",
+        "imports":    [],
+        "to_install": [],
+        "score":      0,
+        "layers":     [],  # طبقات الفحص اللي اتنفذت
+    }
+
+    try:
+        if raw is None:
+            with open(path, "rb") as f:
+                raw = f.read()
+
+        content = raw.decode("utf-8", errors="replace")
+        ext = os.path.splitext(path)[1].lower()
+
+        # ── طبقة 1: فحص Hash ─────────────────────────────────
+        result["layers"].append("Hash Check")
+        is_known, hash_val = _hash_check(raw)
+        result["hash_md5"] = hash_val
+        if is_known:
+            result["dangers"].append((hash_val, SEV_CRITICAL))
+            result["score"] += 100
+
+        # ── طبقة 2: Shannon Entropy ──────────────────────────
+        result["layers"].append("Entropy Analysis")
+        entropy = _entropy_check(content)
+        result["entropy"] = entropy
+        if entropy > 6.5:
+            result["warnings"].append(f"Entropy عالي ({entropy}) — كود مشفر/مضغوط محتمل")
+            result["score"] += 15
+        if entropy > 7.2:
+            result["dangers"].append((f"Entropy خطير ({entropy}) — Packed/Obfuscated", SEV_HIGH))
+            result["score"] += 25
+
+        # ── طبقة 3: Regex Pattern Matching ───────────────────
+        result["layers"].append("Pattern Matching (YARA-style)")
+        for pattern, desc, severity in DANGER_PATTERNS:
+            if re.search(pattern, content, re.IGNORECASE | re.DOTALL):
+                result["dangers"].append((desc, severity))
+                result["score"] += {"CRITICAL": 50, "HIGH": 25, "MEDIUM": 10}.get(severity, 5)
+
+        # ── طبقة 4: AST Analysis (Python فقط) ────────────────
+        if ext == ".py":
+            result["layers"].append("AST Deep Analysis")
+            ast_issues = _ast_deep_scan(content)
+            for desc, severity in ast_issues:
+                result["dangers"].append((desc, severity))
+                result["score"] += {"CRITICAL": 50, "HIGH": 25, "MEDIUM": 10}.get(severity, 5)
+
+        # ── طبقة 5: فحص الـ Imports ──────────────────────────
+        result["layers"].append("Import Scanner")
+        imports = set()
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            m = re.match(r'^import\s+([\w]+)', stripped)
+            if m: imports.add(m.group(1))
+            m = re.match(r'^from\s+([\w]+)', stripped)
+            if m: imports.add(m.group(1))
+
+        result["imports"] = sorted(imports - BUILTIN)
+
+        # مكاتب خطيرة بذاتها
+        DANGEROUS_IMPORTS = {
+            "pynput":    ("Keylogger library", SEV_HIGH),
+            "pyHook":    ("Keylogger library", SEV_HIGH),
+            "win32api":  ("Windows API مشبوه", SEV_MEDIUM),
+            "win32con":  ("Windows API مشبوه", SEV_MEDIUM),
+            "ctypes":    ("مكتبة ctypes — قد تُستخدم لـ Injection", SEV_MEDIUM),
+            "mss":       ("لقطات شاشة", SEV_MEDIUM),
+        }
+        for imp in imports:
+            if imp in DANGEROUS_IMPORTS:
+                desc, sev = DANGEROUS_IMPORTS[imp]
+                result["dangers"].append((f"استيراد {imp}: {desc}", sev))
+                result["score"] += {"CRITICAL": 50, "HIGH": 25, "MEDIUM": 10}.get(sev, 5)
+
+        # مكاتب محتاجة تثبيت
+        to_install = []
+        for imp in imports:
+            if imp in BUILTIN: continue
+            if imp in IMPORT_MAP:
+                for p in IMPORT_MAP[imp].split():
+                    if not _is_installed(p): to_install.append(p)
+            else:
+                if not _is_installed(imp): to_install.append(imp)
+        result["to_install"] = list(dict.fromkeys(to_install))
+
+        # ── طبقة 6: فحص الـ URLs المشبوهة ────────────────────
+        result["layers"].append("URL Scanner")
+        urls = re.findall(r'https?://[^\s\'"]+', content)
+        SUSPICIOUS_DOMAINS = ["pastebin.com","hastebin","ngrok","serveo","raw.githubusercontent.com/suspicious"]
+        for url in urls:
+            for d in SUSPICIOUS_DOMAINS:
+                if d in url:
+                    result["warnings"].append(f"URL مشبوه: {url[:60]}")
+                    result["score"] += 8
+                    break
+
+        # ── تحديد الحكم النهائي ───────────────────────────────
+        critical_found = any(s == SEV_CRITICAL for _, s in result["dangers"])
+        high_found     = any(s == SEV_HIGH     for _, s in result["dangers"])
+
+        if critical_found or result["score"] >= 50:
+            result["verdict"] = "CRITICAL"
+        elif high_found or result["score"] >= 25:
+            result["verdict"] = "DANGER"
+        elif result["warnings"] or result["score"] >= 10:
+            result["verdict"] = "WARNING"
+        else:
+            result["verdict"] = "SAFE"
+
+    except Exception as e:
+        result["warnings"].append(f"خطأ في الفحص: {e}")
+        result["verdict"] = "WARNING"
+
+    return result
+
+
+# ── نظام التحذيرات والحظر التلقائي ─────────────────────────
+def handle_security_violation(uid: str, fname: str, result: dict, chat_id: int) -> bool:
+    """
+    يعالج الملف الخطير:
+    - CRITICAL → حظر فوري
+    - DANGER   → تحذير، بعد MAX_WARNINGS حظر
+    يرجع True لو تم الحظر أو الرفض، False لو تجاوز
+    """
+    verdict  = result["verdict"]
+    dangers  = result["dangers"]
+    score    = result["score"]
+    name     = db["users"].get(uid, {}).get("name", "؟")
+    role_e   = {"owner":"🔱","admin":"👑","vip":"⭐","user":"👤"}.get(get_role(uid),"👤")
+
+    # ── بناء قائمة الأنماط الخطيرة ──────────────────────────
+    danger_lines = ""
+    for desc, sev in dangers[:8]:
+        icon = "🔴" if sev == SEV_CRITICAL else "🟠" if sev == SEV_HIGH else "🟡"
+        danger_lines += f"  {icon} {desc}\n"
+
+    # ── إشعار الأدمن دائماً ──────────────────────────────────
+    mk_admin = types.InlineKeyboardMarkup(row_width=2)
+    mk_admin.add(
+        types.InlineKeyboardButton("✅ موافقة استثنائية", callback_data=f"qapprove_{fname}"),
+        types.InlineKeyboardButton("🗑 حذف فوري",         callback_data=f"qdelete_{fname}"),
+        types.InlineKeyboardButton("🚫 حظر المستخدم",    callback_data=f"uact_{uid}_ban"),
+        types.InlineKeyboardButton("👤 ملف المستخدم",    callback_data=f"uview_{uid}"),
+    )
+    sev_icon = "🚨" if verdict == "CRITICAL" else "⚠️"
+    bot.send_message(ADMIN_ID,
+        f"{sev_icon} *تهديد أمني — {verdict}*\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"📄 الملف: `{fname}`\n"
+        f"{role_e} المستخدم: *{name}* | 🆔 `{uid}`\n"
+        f"🎯 نقاط الخطر: `{score}`\n"
+        f"🔬 طبقات الفحص: `{len(result['layers'])}`\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"⛔ *الأنماط الخطيرة:*\n{danger_lines}",
+        parse_mode="Markdown", reply_markup=mk_admin)
+
+    # ── CRITICAL → حظر فوري ─────────────────────────────────
+    if verdict == "CRITICAL":
+        add_to_blacklist(uid)
+        if uid in db["users"]: db["users"][uid]["role"] = "banned"
+        save()
+        sec_log(uid, f"حظر فوري — ملف CRITICAL: {fname}", "critical", fname)
+        INTRUSION_SCORE[uid] = MAX_INTRUSION + 1
+
+        bot.send_message(chat_id,
+            f"🚫 *رُفض — حظر فوري*\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"⛔ *أنماط خطيرة جداً:*\n{danger_lines}\n"
+            f"📄 الملف: `{fname}`\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"🔒 تم حظرك تلقائياً بسبب رفع ملف خطير للغاية.",
+            parse_mode="Markdown")
+        return True
+
+    # ── DANGER → نظام التحذيرات (1 → 2 → 3 → حظر فوري) ────────
+    if uid not in warning_count:
+        warning_count[uid] = 0
+
+    warning_count[uid] += 1
+    current = warning_count[uid]
+
+    if current >= MAX_WARNINGS:
+        # وصل الحد → حظر فوري على الفور
+        warning_count.pop(uid, None)
+        add_to_blacklist(uid)
+        if uid in db["users"]: db["users"][uid]["role"] = "banned"
+        save()
+        sec_log(uid, f"حظر تلقائي — استنفد {MAX_WARNINGS} تحذيرات", "critical", fname)
+        INTRUSION_SCORE[uid] = MAX_INTRUSION + 1
+
+        bot.send_message(chat_id,
+            f"🚫 *رُفض — حظر فوري*\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"⛔ *الأنماط الخطيرة:*\n{danger_lines}\n"
+            f"📄 الملف: `{fname}`\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"🔴 تحذير {current}/{MAX_WARNINGS} — استنفدت كل تحذيراتك.\n"
+            f"🔒 *تم حظرك نهائياً من البوت.*",
+            parse_mode="Markdown")
+        try:
+            bot.send_message(ADMIN_ID,
+                f"🔒 *حظر تلقائي فوري*\n"
+                f"{role_e} *{name}* | 🆔 `{uid}`\n"
+                f"📄 آخر ملف: `{fname}`\n"
+                f"🎯 استنفد {MAX_WARNINGS} تحذيرات",
+                parse_mode="Markdown")
+        except: pass
+        return True
+
+    else:
+        # تحذير مع عداد تصاعدي واضح
+        filled  = "🟥" * current
+        empty   = "⬜" * (MAX_WARNINGS - current)
+        bar     = filled + empty
+        left    = MAX_WARNINGS - current
+        left_txt = f"تحذير{'ات' if left > 1 else ''} واحدة أخرى ستُحظر فوراً!" if left == 1 else f"بعد {left} تحذيرات ستُحظر فوراً"
+
+        bot.send_message(chat_id,
+            f"🚫 *رُفض — حظر فوري*\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"⛔ *أنماط خطيرة:*\n{danger_lines}\n"
+            f"📄 الملف: `{fname}`\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ *تحذير {current}/{MAX_WARNINGS}* {bar}\n"
+            f"{'⚡ آخر تحذير! ' if left == 1 else ''}{left_txt}",
+            parse_mode="Markdown")
+        return True
+
+    return False
+
+
+# ── الاحتفاظ بـ scan_file القديمة للتوافق ──────────────────
+def scan_file(path: str) -> dict:
+    """wrapper للتوافق مع الكود القديم"""
+    result = deep_scan_file(path)
+    # تحويل للصيغة القديمة
+    old_format = {
+        "safe":       result["verdict"] == "SAFE",
+        "warnings":   result["warnings"],
+        "danger":     [d for d, _ in result["dangers"]],
+        "imports":    result["imports"],
+        "to_install": result["to_install"],
+    }
+    return old_format
+
+
 
 # ── خريطة شاملة للمكاتب مع الإصدارات الصحيحة ──
 IMPORT_MAP = {
@@ -1161,56 +1700,126 @@ threading.Thread(target=health_monitor, daemon=True).start()
 def kb_owner():
     m = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
     m.add(
-        "🖥 الاستضافة",     "⚙️ الحاويات",      "🔍 مراقبة العمليات",
-        "📡 موارد السيرفر", "📋 السجلات",        "📊 الإحصائيات",
-        "👥 المستخدمون",    "🔐 لوحة الأدمن",    "🧹 تطهير",
-        "🖥️ Shell",         "📁 الملفات",        "⏰ المجدولة",
-        "🚨 الحجر الصحي",   "💀 إيقاف الكل",     "🔄 تحديث البوت",
-        "💾 باك أب",        "📦 تثبيت مكاتب",    "🔎 فحص ملف",
-        "📢 بث رسالة",      "🌐 فحص IP",         "📝 ملاحظات",
-        "⚡ تسريع",         "🔒 قفل البوت",      "🗑 مسح السجلات",
-        "🕐 وقت التشغيل",   "🔑 توليد كلمة سر",  "📌 تثبيت رسالة",
-        "🌡 درجة CPU",      "📋 نسخ السجل",      "🔃 إعادة تشغيل الكل",
-        "⚙️ الإعدادات",     "🛡 أمان الملفات",   "📈 تقرير فوري",
-        "🎫 التذاكر",       "🚫 القائمة السوداء", "📜 إصدارات الملفات",
-        "🏆 المتصدرون",     "🔎 بحث مستخدم",      "📣 إشعار عام",
-        "🤖 ذكاء اصطناعي", "🛡 لوحة الأمان",     "📡 المشبوهون",
+        # ─── قسم الرفع والاستضافة ───────────
+        "📦 قسم الرفع",
+        # ─── قسم الأدمن ──────────────────────
+        "👑 قسم الأدمن",
+        # ─── قسم السيرفر ─────────────────────
+        "🖥 قسم السيرفر",
+        # ─── قسم المستخدمين ──────────────────
+        "👥 قسم المستخدمين",
+        # ─── قسم التواصل ─────────────────────
+        "💬 قسم التواصل",
+        # ─── قسم الأدوات ─────────────────────
+        "🔧 قسم الأدوات",
     )
     return m
 
 def kb_admin():
     m = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
     m.add(
-        "🖥 الاستضافة",     "⚙️ الحاويات",      "🔍 مراقبة العمليات",
-        "📡 موارد السيرفر", "📋 السجلات",        "📊 الإحصائيات",
-        "👥 المستخدمون",    "📁 الملفات",        "⏰ المجدولة",
-        "💀 إيقاف الكل",    "💾 باك أب",         "📦 تثبيت مكاتب",
-        "📢 بث رسالة",      "🔎 فحص ملف",        "🔃 إعادة تشغيل الكل",
-        "🕐 وقت التشغيل",   "🌡 درجة CPU",       "🗑 مسح السجلات",
-        "🤖 ذكاء اصطناعي", "🎫 التذاكر",        "🛡 لوحة الأمان",
+        "📦 قسم الرفع",
+        "🖥 قسم السيرفر",
+        "👥 قسم المستخدمين",
+        "💬 قسم التواصل",
+        "🔧 قسم الأدوات",
     )
     return m
 
 def kb_vip():
     m = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     m.add(
-        "📂 ملفاتي",        "📡 السيرفر",
-        "▶️ تشغيل ملف",     "⏹ إيقاف ملف",
-        "📊 إحصائياتي",     "📋 لوج ملفاتي",
-        "🔎 فحص ملف",       "🤖 ذكاء اصطناعي",
-        "🎫 تذكرة دعم",     "🔑 توليد كلمة سر",
-        "⭐ مميزات VIP",     "ℹ️ مساعدة",
+        "📂 ملفاتي",         "📊 إحصائياتي",
+        "▶️ تشغيل ملف",      "⏹ إيقاف ملف",
+        "🔎 فحص ملف",        "📋 لوج ملفاتي",
+        "🤖 ذكاء اصطناعي",   "🎫 تذكرة دعم",
+        "💬 تواصل مع الأدمن", "⭐ مميزات VIP",
+        "🔑 توليد كلمة سر",  "ℹ️ مساعدة",
     )
     return m
 
 def kb_user():
     m = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     m.add(
-        "📂 ملفاتي",        "📊 إحصائياتي",
-        "▶️ تشغيل ملف",     "⏹ إيقاف ملف",
-        "🔎 فحص ملف",       "📋 لوج ملفاتي",
-        "🤖 ذكاء اصطناعي",  "🎫 تذكرة دعم",
-        "🔑 توليد كلمة سر", "ℹ️ مساعدة",
+        "📂 ملفاتي",         "📊 إحصائياتي",
+        "▶️ تشغيل ملف",      "⏹ إيقاف ملف",
+        "🔎 فحص ملف",        "📋 لوج ملفاتي",
+        "🤖 ذكاء اصطناعي",   "🎫 تذكرة دعم",
+        "💬 تواصل مع الأدمن", "🔑 توليد كلمة سر",
+        "ℹ️ مساعدة",
+    )
+    return m
+
+# ─── لوحات الأقسام ──────────────────────────────────────────
+
+def kb_section_upload():
+    """📦 قسم الرفع والاستضافة"""
+    m = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
+    m.add(
+        "🖥 الاستضافة",       "⚙️ الحاويات",       "📁 الملفات",
+        "▶️ تشغيل ملف",       "⏹ إيقاف ملف",      "🔄 إعادة تشغيل ملف",
+        "🔎 فحص ملف",         "📦 تثبيت مكاتب",    "📜 إصدارات الملفات",
+        "🚨 الحجر الصحي",     "⏰ المجدولة",        "🔃 إعادة تشغيل الكل",
+        "💀 إيقاف الكل",      "🧹 تطهير",
+        "🔙 الرئيسية",
+    )
+    return m
+
+def kb_section_admin():
+    """👑 قسم الأدمن"""
+    m = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
+    m.add(
+        "🔐 لوحة الأدمن",     "⚙️ الإعدادات",      "🔒 قفل البوت",
+        "🔄 تحديث البوت",     "💾 باك أب",          "📌 تثبيت رسالة",
+        "🛡 لوحة الأمان",     "🚫 القائمة السوداء", "📡 المشبوهون",
+        "🛡 أمان الملفات",    "🎫 التذاكر",         "📢 بث رسالة",
+        "📣 إشعار عام",       "⚡ تسريع",
+        "🔙 الرئيسية",
+    )
+    return m
+
+def kb_section_server():
+    """🖥 قسم السيرفر"""
+    m = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
+    m.add(
+        "📡 موارد السيرفر",   "🔍 مراقبة العمليات", "📊 الإحصائيات",
+        "📋 السجلات",          "🌡 درجة CPU",        "🕐 وقت التشغيل",
+        "📋 نسخ السجل",       "🗑 مسح السجلات",     "📈 تقرير فوري",
+        "🌐 فحص IP",          "🤖 ذكاء اصطناعي",
+        "🔙 الرئيسية",
+    )
+    return m
+
+def kb_section_users():
+    """👥 قسم المستخدمين"""
+    m = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
+    m.add(
+        "👥 المستخدمون",      "🔎 بحث مستخدم",     "🏆 المتصدرون",
+        "📜 إصدارات الملفات", "📝 ملاحظات",         "📊 إحصائيات المستخدمين",
+        "🔙 الرئيسية",
+    )
+    return m
+
+def kb_section_chat():
+    """💬 قسم التواصل"""
+    m = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    m.add(
+        "📬 صندوق الرسائل",           "💬 محادثة مستخدم",
+        "🔕 المحظورون من التواصل",    "🎫 التذاكر",
+        "📢 بث رسالة",                "📣 إشعار عام",
+        "🔙 الرئيسية",
+    )
+    return m
+
+def kb_section_tools():
+    """🔧 قسم الأدوات"""
+    m = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
+    m.add(
+        "🖥️ Shell",           "🔑 توليد كلمة سر",  "📝 ملاحظات",
+        "🌐 فحص IP",          "⚡ تسريع",           "🕐 وقت التشغيل",
+        "🔑 توليد كلمة سر",  "📌 تثبيت رسالة",    "🤖 ذكاء اصطناعي",
+        "ℹ️ مساعدة",
+        "🔙 الرئيسية",
     )
     return m
 
@@ -1220,6 +1829,8 @@ def get_kb(uid:str):
     if r == ROLE_ADMIN: return kb_admin()
     if r == ROLE_VIP:   return kb_vip()
     return kb_user()
+
+
 
 def kb_file(fname):
     m = types.InlineKeyboardMarkup(row_width=3)
@@ -1251,6 +1862,68 @@ def kb_file(fname):
         types.InlineKeyboardButton("📋 نسخ مسار",    callback_data=f"pth_{fname}"),
     )
     return m
+
+
+def kb_file_upload(fname: str, uid: str, config: dict):
+    """
+    لوحة تظهر بعد رفع الملف مباشرة — للأدمن
+    تحتوي على: تشغيل، تعديل التوكن، تعديل الـ ID، رسالة للكل، وكل أزرار الإدارة
+    """
+    active = db["files"].get(fname, {}).get("active", False)
+    ext    = os.path.splitext(fname)[1].lower()
+    is_py  = ext == ".py"
+
+    m = types.InlineKeyboardMarkup(row_width=2)
+
+    # ─── صف 1: تشغيل / حذف ─────────────────
+    m.add(
+        types.InlineKeyboardButton("▶️ تشغيل الآن",  callback_data=f"tog_{fname}"),
+        types.InlineKeyboardButton("🗑 حذف",          callback_data=f"del_{fname}"),
+    )
+
+    # ─── صف 2: تعديل التوكن والـ ID (للـ .py فقط) ──
+    if is_py:
+        tok_icon = "✅ توكن" if config.get("has_token") else "❌ تعديل التوكن"
+        id_icon  = "✅ ID"   if config.get("has_admin") else "❌ تعديل الـ ID"
+        m.add(
+            types.InlineKeyboardButton(f"🔑 {tok_icon}",  callback_data=f"edit_token_{fname}"),
+            types.InlineKeyboardButton(f"👤 {id_icon}",   callback_data=f"edit_id_{fname}"),
+        )
+        m.add(
+            types.InlineKeyboardButton("✏️ تعديل توكن + ID", callback_data=f"edit_both_{fname}"),
+        )
+
+    # ─── صف 3: رسائل ─────────────────────────
+    m.add(
+        types.InlineKeyboardButton("📢 رسالة لكل المستخدمين", callback_data=f"bcast_file_{fname}"),
+    )
+
+    # ─── صف 4: إدارة ─────────────────────────
+    m.add(
+        types.InlineKeyboardButton("📋 لوج",    callback_data=f"log_{fname}"),
+        types.InlineKeyboardButton("📥 تحميل",  callback_data=f"dwn_{fname}"),
+        types.InlineKeyboardButton("🔎 فحص",    callback_data=f"chk_{fname}"),
+    )
+    m.add(
+        types.InlineKeyboardButton("🌍 ENV",    callback_data=f"env_{fname}"),
+        types.InlineKeyboardButton("🔁 Auto",   callback_data=f"ar_{fname}"),
+        types.InlineKeyboardButton("📦 مكاتب",  callback_data=f"pip_{fname}"),
+    )
+    return m
+
+
+def kb_file_user_upload(fname: str):
+    """لوحة تظهر للمستخدم العادي بعد رفع الملف"""
+    m = types.InlineKeyboardMarkup(row_width=2)
+    m.add(
+        types.InlineKeyboardButton("▶️ تشغيل",       callback_data=f"utog_{fname}"),
+        types.InlineKeyboardButton("📋 لوج",          callback_data=f"log_{fname}"),
+        types.InlineKeyboardButton("🗑 حذف",          callback_data=f"del_{fname}"),
+        types.InlineKeyboardButton("📂 ملفاتي كلها",  callback_data=f"uview_files"),
+    )
+    return m
+
+
 
 def kb_admin_panel():
     """لوحة إدارة المستخدمين الكبيرة"""
@@ -1290,6 +1963,117 @@ def kb_user_actions(target_uid:str, role:str):
 # ══════════════════════════════════════════════════════════════
 user_states = {}
 shell_mode  = set()
+
+# ══════════════════════════════════════════════════════════════
+#  نظام المحادثة المباشرة بين الأدمن والمستخدمين
+# ══════════════════════════════════════════════════════════════
+# admin_chat_with[admin_uid] = target_uid  → الأدمن بيكلم مين دلوقتي
+# user_chat_open[user_uid]   = True        → المستخدم في وضع التواصل
+admin_chat_with: dict = {}
+user_chat_open:  set  = set()
+
+def _send_to_admin(from_uid: str, text: str = None, msg=None):
+    """إرسال رسالة من مستخدم للأدمن الرئيسي مع زر رد"""
+    name   = db["users"].get(from_uid, {}).get("name", "؟")
+    role   = get_role(from_uid)
+    role_e = {"owner":"🔱","admin":"👑","vip":"⭐","user":"👤"}.get(role,"👤")
+
+    mk = types.InlineKeyboardMarkup(row_width=2)
+    mk.add(
+        types.InlineKeyboardButton("💬 رد عليه",    callback_data=f"chat_reply_{from_uid}"),
+        types.InlineKeyboardButton("👤 ملفه",        callback_data=f"uview_{from_uid}"),
+        types.InlineKeyboardButton("🚫 تجاهل",       callback_data=f"chat_ignore_{from_uid}"),
+        types.InlineKeyboardButton("🔕 حظر التواصل", callback_data=f"chat_block_{from_uid}"),
+    )
+    header = (
+        f"💬 *رسالة من مستخدم*\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"{role_e} *{name}* | 🆔 `{from_uid}`\n"
+        f"🕐 {datetime.now().strftime('%H:%M:%S')}\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+    )
+    try:
+        if msg and msg.document:
+            # إعادة إرسال الملف للأدمن
+            bot.send_document(
+                ADMIN_ID,
+                msg.document.file_id,
+                caption=header + f"📎 أرسل ملف: `{msg.document.file_name}`",
+                parse_mode="Markdown",
+                reply_markup=mk
+            )
+        elif msg and msg.photo:
+            bot.send_photo(
+                ADMIN_ID,
+                msg.photo[-1].file_id,
+                caption=header + (msg.caption or ""),
+                parse_mode="Markdown",
+                reply_markup=mk
+            )
+        elif msg and msg.voice:
+            bot.send_voice(
+                ADMIN_ID,
+                msg.voice.file_id,
+                caption=header + "🎙 رسالة صوتية",
+                parse_mode="Markdown",
+                reply_markup=mk
+            )
+        else:
+            bot.send_message(
+                ADMIN_ID,
+                header + (text or ""),
+                parse_mode="Markdown",
+                reply_markup=mk
+            )
+    except Exception as e:
+        log.error(f"_send_to_admin: {e}")
+
+def _send_to_user(target_uid: str, text: str = None, msg=None, from_name: str = "الأدمن"):
+    """إرسال رسالة من الأدمن لمستخدم"""
+    mk = types.InlineKeyboardMarkup()
+    mk.add(types.InlineKeyboardButton("💬 رد على الأدمن", callback_data="open_chat"))
+    header = (
+        f"📩 *رسالة من {from_name}:*\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+    )
+    try:
+        if msg and msg.document:
+            bot.send_document(
+                int(target_uid),
+                msg.document.file_id,
+                caption=header + f"📎 `{msg.document.file_name}`",
+                parse_mode="Markdown",
+                reply_markup=mk
+            )
+        elif msg and msg.photo:
+            bot.send_photo(
+                int(target_uid),
+                msg.photo[-1].file_id,
+                caption=header + (msg.caption or ""),
+                parse_mode="Markdown",
+                reply_markup=mk
+            )
+        elif msg and msg.voice:
+            bot.send_voice(
+                int(target_uid),
+                msg.voice.file_id,
+                caption=header + "🎙 رسالة صوتية من الأدمن",
+                parse_mode="Markdown",
+                reply_markup=mk
+            )
+        else:
+            bot.send_message(
+                int(target_uid),
+                header + (text or ""),
+                parse_mode="Markdown",
+                reply_markup=mk
+            )
+        return True
+    except Exception as e:
+        log.error(f"_send_to_user {target_uid}: {e}")
+        return False
+
+
 
 # ══════════════════════════════════════════════════════════════
 #  /start
@@ -1448,6 +2232,23 @@ def handle_upload(m):
     uid  = reg_user(m)
     role = get_role(uid)
 
+    # ➤ لو المستخدم في وضع التواصل → الملف يروح للأدمن
+    if uid in user_chat_open and not is_staff(uid):
+        if uid not in db.get("chat_blocked", []):
+            _send_to_admin(uid, None, m)
+            bot.reply_to(m, "📨 الملف وصل للأدمن ✅")
+        else:
+            bot.reply_to(m, "🔕 تواصلك محظور حالياً.")
+        return
+
+    # ➤ لو الأدمن في محادثة → الملف يروح للمستخدم
+    if is_staff(uid) and uid in admin_chat_with:
+        target = admin_chat_with[uid]
+        name = db["users"].get(target, {}).get("name", "؟")
+        ok = _send_to_user(target, None, m)
+        bot.reply_to(m, f"✅ الملف وصل لـ *{name}*" if ok else f"❌ فشل الإرسال لـ `{target}`", parse_mode="Markdown")
+        return
+
     # لو البوت مقفول والمستخدم مش أدمن
     if db.get("locked") and not is_staff(uid):
         bot.reply_to(m, "🔒 البوت مقفول حالياً. جرّب بعدين."); return
@@ -1463,6 +2264,185 @@ def handle_upload(m):
                 add_intrusion(uid, 8, f"رفع ملف محمي: {fname}")
                 bot.reply_to(m, f"🚫 الملف `{fname}` محمي ولا يمكن رفعه!", parse_mode="Markdown")
                 return
+
+            # ── كشف سرقة الكود بالعلامة المائية ─────────
+            if ext == ".py" and role == ROLE_USER:
+                content = raw.decode("utf-8", errors="ignore")
+                if "__WM__" in content:
+                    import re as _re
+                    wm = _re.search(r"__WM__(\d+)_\d+_\w+__WM__", content)
+                    if wm and wm.group(1) != uid:
+                        orig_uid = wm.group(1)
+                        add_intrusion(uid, 12, f"رفع ملف مسروق من {orig_uid}")
+                        sec_log(uid, f"ملف مسروق من {orig_uid}", "critical", fname)
+                        try:
+                            bot.send_message(ADMIN_ID,
+                                f"🚨 *ملف مسروق!*\n"
+                                f"السارق: {db['users'].get(uid,{}).get('name','؟')} (`{uid}`)\n"
+                                f"المالك الأصلي: `{orig_uid}`\n"
+                                f"الملف: `{fname}`", parse_mode="Markdown")
+                        except: pass
+                        bot.reply_to(m, "🚨 تم رفض الملف — يحتوي على علامة مائية من مستخدم آخر!")
+                        return
+                if TOKEN[:20] in content:
+                    add_intrusion(uid, 15, f"رفع ملف يحتوي التوكن: {fname}")
+                    bot.reply_to(m, "🚨 تم رفض الملف لأسباب أمنية!"); return
+
+            # ── التحقق من الحجم والامتداد ────────────────
+            ok, reason = validate_file(raw, fname, uid)
+            if not ok:
+                bot.reply_to(m, f"❌ {reason}"); return
+
+            # ── وضع فحص فقط بدون رفع ─────────────────
+            state = user_states.get(uid, {})
+            if state.get("action") == "scan_only":
+                user_states.pop(uid, None)
+                tmp = f"/tmp/scan_{fname}"
+                with open(tmp,'wb') as f2: f2.write(raw)
+
+                # 🛡 الفحص العميق
+                bot.send_chat_action(m.chat.id, "typing")
+                deep  = deep_scan_file(tmp, raw)
+                config= check_bot_config(tmp)
+                try: os.remove(tmp)
+                except: pass
+
+                _send_scan_report(m, fname, deep, config, len(raw), scan_only=True)
+                return
+
+            # ── تحديث البوت ────────────────────────────
+            if state.get("action") == "update_bot" and fname == "bot.py":
+                user_states.pop(uid, None)
+                new_path = "bot.py"
+                with open(new_path,'wb') as f2: f2.write(raw)
+                bot.reply_to(m,
+                    "🔄 *تم استلام التحديث!*\n♻️ جارٍ إعادة التشغيل...",
+                    parse_mode="Markdown")
+                time.sleep(1)
+                os.execv(sys.executable, [sys.executable, "bot.py"])
+                return
+
+            # ── requirements.txt ──────────────────────
+            if fname == "requirements.txt":
+                path = f"ELITE_HOST/{fname}"
+                with open(path,'wb') as f2: f2.write(raw)
+                bot.reply_to(m, "📦 *تم استلام requirements.txt*\nجارٍ التثبيت...", parse_mode="Markdown")
+                pending = user_states.get(uid,{})
+                pfile   = pending.get("pending_file") if pending.get("action") == "waiting_run" else None
+                install_req_file(path, m.chat.id)
+                if pfile and pfile in db["files"]:
+                    user_states.pop(uid, None)
+                    launch(db["files"][pfile]["path"], pfile)
+                    bot.send_message(m.chat.id, f"🚀 تم تشغيل `{pfile}`!", parse_mode="Markdown")
+                return
+
+            # ══════════════════════════════════════════
+            # 🛡 ELITE DEEP SCAN — الفحص الأمني الشامل
+            # ══════════════════════════════════════════
+            if ext in [".py", ".js", ".sh"]:
+                # رسالة "جارٍ الفحص..."
+                scan_msg = bot.reply_to(m,
+                    f"🔬 *جارٍ الفحص الأمني الشامل...*\n"
+                    f"━━━━━━━━━━━━━━━━━━━\n"
+                    f"📄 `{fname}` | 📦 `{len(raw)//1024} KB`\n"
+                    f"⏳ يرجى الانتظار...",
+                    parse_mode="Markdown")
+
+                # حفظ مؤقت للفحص
+                tmp_path = f"/tmp/prescan_{fname}"
+                with open(tmp_path,'wb') as f2: f2.write(raw)
+
+                deep   = deep_scan_file(tmp_path, raw)
+                config = check_bot_config(tmp_path) if ext == ".py" else {}
+                try: os.remove(tmp_path)
+                except: pass
+
+                verdict = deep["verdict"]
+
+                # ── إذا خطير → ارفض فوراً ────────────────
+                if verdict in ("CRITICAL", "DANGER") and not is_staff(uid):
+                    # احذف رسالة "جارٍ الفحص"
+                    try: bot.delete_message(m.chat.id, scan_msg.message_id)
+                    except: pass
+
+                    # سجّل في الحجر الصحي
+                    db["quarantine"].append({
+                        "fname": fname, "uid": uid,
+                        "dangers": [d for d,_ in deep["dangers"]],
+                        "verdict": verdict, "score": deep["score"],
+                        "time": datetime.now().strftime('%Y-%m-%d %H:%M')
+                    })
+                    db["stats"]["blocked"] = db["stats"].get("blocked",0)+1
+                    save()
+
+                    # نظام التحذيرات والحظر
+                    handle_security_violation(uid, fname, deep, m.chat.id)
+                    return
+
+                # ── إذا تحذير للأدمن فقط (لا يوقف الرفع) ──
+                if verdict == "WARNING" or (verdict in ("CRITICAL","DANGER") and is_staff(uid)):
+                    try: bot.delete_message(m.chat.id, scan_msg.message_id)
+                    except: pass
+                    # أخطر الأدمن بس ما توقفش
+                    if deep["dangers"] or deep["warnings"]:
+                        _send_scan_report(m, fname, deep, config, len(raw), scan_only=False, admin_only=True)
+
+            # ── حفظ الملف ────────────────────────────────
+            path = f"ELITE_HOST/{fname}"
+            if os.path.exists(path):
+                save_file_version(fname, path)
+            with open(path,'wb') as f2: f2.write(raw)
+            db["files"][fname] = {
+                "owner": uid, "active": False, "path": path,
+                "size": len(raw), "auto_restart": False,
+                "uploaded_at": datetime.now().strftime('%Y-%m-%d %H:%M'), "ext": ext
+            }
+            db["stats"]["uploads"] = db["stats"].get("uploads",0)+1
+            db["users"][uid]["uploads"] = db["users"].get(uid,{}).get("uploads",0)+1
+            save()
+
+            # ── رسالة تأكيد الرفع مع نتيجة الفحص ────────
+            if ext == ".py":
+                deep2  = deep_scan_file(path) if ext in [".py",".js",".sh"] else {"verdict":"SAFE","dangers":[],"warnings":[],"to_install":[],"score":0,"entropy":0,"hash_md5":"","layers":[]}
+                config = check_bot_config(path)
+                # حذف رسالة "جارٍ الفحص" القديمة لو موجودة
+                try: bot.delete_message(m.chat.id, scan_msg.message_id)
+                except: pass
+                _send_scan_report(m, fname, deep2, config, len(raw), scan_only=False)
+
+                # تثبيت المكاتب وتشغيل
+                def install_and_run(deep=deep2, path=path, fname=fname, chat_id=m.chat.id):
+                    if deep.get("to_install"):
+                        bot.send_message(chat_id,
+                            f"📦 *مكاتب مكتشفة:* `{' '.join(deep['to_install'])}`\nجارٍ التثبيت...",
+                            parse_mode="Markdown")
+                        ok2 = install_pkgs(deep["to_install"], None)
+                        if ok2:
+                            bot.send_message(chat_id, "✅ تم تثبيت المكاتب!", parse_mode="Markdown")
+                    launch(path, fname)
+                    bot.send_message(chat_id, f"🚀 *تم تشغيل* `{fname}`!", parse_mode="Markdown")
+                executor.submit(install_and_run)
+
+            else:
+                try: bot.delete_message(m.chat.id, scan_msg.message_id)
+                except: pass
+                bot.reply_to(m,
+                    f"✅ *تم الرفع:* `{fname}`\n📦 `{len(raw)//1024} KB`\n🛡 الملف آمن ✅",
+                    parse_mode="Markdown",
+                    reply_markup=kb_file_upload(fname, uid, {}) if is_staff(uid) else kb_file_user_upload(fname)
+                )
+                if ext in [".js", ".sh"]:
+                    launch(path, fname)
+                    bot.send_message(m.chat.id, f"🚀 *تم تشغيل* `{fname}`!", parse_mode="Markdown")
+
+            # ── إشعار الأدمن ──────────────────────────────
+            _notify_admin_upload(uid, fname, len(raw), ext, m.chat.id)
+
+        except Exception as e:
+            log.error(f"Upload: {e}")
+            bot.reply_to(m, f"❌ خطأ: `{e}`", parse_mode="Markdown")
+
+
 
             # ── كشف سرقة الكود بالعلامة المائية ─────────
             if ext == ".py" and role == ROLE_USER:
@@ -1579,7 +2559,7 @@ def handle_upload(m):
                     f"🤖 فحص البوت:\n{tok_line}\n{admin_line}"
                     f"{sugg_lines}{warn_lines}\n\n"
                     f"🔍 الأمان: {scan_txt}{libs_txt}{danger_txt}",
-                    reply_markup=kb_file(fname) if is_staff(uid) else None
+                    reply_markup=kb_file_upload(fname, uid, config) if is_staff(uid) else kb_file_user_upload(fname)
                 )
 
                 # لو فيه خطر → حجر صحي + إشعار أدمن
@@ -1629,30 +2609,20 @@ def handle_upload(m):
                 bot.reply_to(m,
                     f"✅ *تم الرفع:* `{fname}`\n📦 `{len(raw)//1024} KB`",
                     parse_mode="Markdown",
-                    reply_markup=kb_file(fname) if is_staff(uid) else None
+                    reply_markup=kb_file_upload(fname, uid, {}) if is_staff(uid) else kb_file_user_upload(fname)
                 )
                 if ext in [".js", ".sh"]:
                     launch(path, fname)
                     bot.send_message(m.chat.id, f"🚀 *تم تشغيل* `{fname}`!", parse_mode="Markdown")
 
-            # إشعار الأدمن لو رفعه مستخدم عادي
-            if not is_staff(uid):
-                markup = types.InlineKeyboardMarkup(row_width=2)
-                markup.add(
-                    types.InlineKeyboardButton("▶️ تشغيل", callback_data=f"tog_{fname}"),
-                    types.InlineKeyboardButton("🗑 حذف",   callback_data=f"del_{fname}"),
-                )
-                name = db["users"].get(uid,{}).get("name","؟")
-                bot.send_message(ADMIN_ID,
-                    f"📤 *ملف جديد*\n👤 {name} (`{uid}`)\n📄 `{fname}`\n📦 `{len(raw)//1024} KB`",
-                    parse_mode="Markdown", reply_markup=markup)
+            # ══ إشعار الأدمن عند رفع أي مستخدم ══════════════
+            _notify_admin_upload(uid, fname, len(raw), ext, m.chat.id)
 
         except Exception as e:
             log.error(f"Upload: {e}")
             bot.reply_to(m, f"❌ خطأ: `{e}`", parse_mode="Markdown")
 
     executor.submit(deploy)
-
 # ══════════════════════════════════════════════════════════════
 #  Callbacks
 # ══════════════════════════════════════════════════════════════
@@ -2085,8 +3055,20 @@ def callbacks(call):
             user_states[uid] = {"action": f"cfg_set_{tgt}"}
             bot.send_message(call.message.chat.id,
                 f"✏️ {cfg_labels[tgt]}\nالقيمة الحالية: {db['settings'].get(tgt, db.get('daily_report_time','08:00'))}\n\nابعت القيمة الجديدة:")
-    # ══ عرض ملف مستخدم كامل ══════════════
     elif act == "uview":
+        if tgt == "files":
+            # المستخدم العادي يشوف ملفاته
+            bot.answer_callback_query(call.id)
+            uid_files = [f for f, v in db["files"].items() if v.get("owner") == uid]
+            if not uid_files:
+                bot.send_message(call.message.chat.id, "📂 لا توجد ملفات."); return
+            mk2 = types.InlineKeyboardMarkup(row_width=2)
+            for f in uid_files[:10]:
+                st = "✅" if db["files"][f].get("active") else "❌"
+                mk2.add(types.InlineKeyboardButton(f"{st} {f}", callback_data=f"log_{f}"))
+            bot.send_message(call.message.chat.id,
+                f"📂 *ملفاتك ({len(uid_files)}):*", parse_mode="Markdown", reply_markup=mk2)
+            return
         if not is_staff(uid): return
         bot.answer_callback_query(call.id)
         target = tgt
@@ -2327,7 +3309,196 @@ def callbacks(call):
             user_states[uid] = {"action":"ai_chat","mode":"prog"}
             bot.send_message(call.message.chat.id, "🔧 ابعت سؤال البرمجة:")
 
-def _apply_user_action(call, admin_uid, action, target_uid):
+    # ══ تعديل التوكن والـ ID في الملف ══════
+    elif act == "edit":
+        if only_staff(): return
+        bot.answer_callback_query(call.id)
+
+        if tgt.startswith("token_"):
+            fname = tgt[6:]
+            user_states[uid] = {"action": "edit_token", "file": fname, "step": "token"}
+            mk_cancel = types.InlineKeyboardMarkup()
+            mk_cancel.add(types.InlineKeyboardButton("❌ إلغاء", callback_data=f"edit_cancel_{fname}"))
+            bot.send_message(call.message.chat.id,
+                f"🔑 *تعديل التوكن في* `{fname}`\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"أرسل التوكن الجديد:\n"
+                f"مثال: `1234567890:AAFxxx...`",
+                parse_mode="Markdown", reply_markup=mk_cancel)
+
+        elif tgt.startswith("id_"):
+            fname = tgt[3:]
+            user_states[uid] = {"action": "edit_admin_id", "file": fname}
+            mk_cancel = types.InlineKeyboardMarkup()
+            mk_cancel.add(types.InlineKeyboardButton("❌ إلغاء", callback_data=f"edit_cancel_{fname}"))
+            bot.send_message(call.message.chat.id,
+                f"👤 *تعديل الـ Admin ID في* `{fname}`\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"أرسل الـ ID الجديد:\n"
+                f"مثال: `123456789`",
+                parse_mode="Markdown", reply_markup=mk_cancel)
+
+        elif tgt.startswith("both_"):
+            fname = tgt[5:]
+            user_states[uid] = {"action": "edit_token", "file": fname, "step": "token", "then_id": True}
+            mk_cancel = types.InlineKeyboardMarkup()
+            mk_cancel.add(types.InlineKeyboardButton("❌ إلغاء", callback_data=f"edit_cancel_{fname}"))
+            bot.send_message(call.message.chat.id,
+                f"✏️ *تعديل التوكن والـ ID في* `{fname}`\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"*الخطوة 1/2:* أرسل التوكن الجديد:",
+                parse_mode="Markdown", reply_markup=mk_cancel)
+
+        elif tgt.startswith("cancel_"):
+            fname = tgt[7:]
+            user_states.pop(uid, None)
+            bot.send_message(call.message.chat.id,
+                f"❌ تم إلغاء التعديل على `{fname}`.",
+                parse_mode="Markdown",
+                reply_markup=kb_file(fname))
+
+        elif tgt.startswith("skip_id_"):
+            fname = tgt[8:]
+            user_states.pop(uid, None)
+            bot.answer_callback_query(call.id, "⏭ تم التخطي")
+            _show_edit_done(call.message, fname, "✅ تم تعديل التوكن — تم تخطي الـ ID")
+
+    # ══ رسالة لكل المستخدمين بعد رفع ملف ══
+    elif act == "bcast":
+        if only_staff(): return
+        bot.answer_callback_query(call.id)
+        if tgt.startswith("file_"):
+            fname = tgt[5:]
+            mk = types.InlineKeyboardMarkup(row_width=3)
+            mk.add(
+                types.InlineKeyboardButton("👥 الكل",      callback_data=f"bcast_all_{fname}"),
+                types.InlineKeyboardButton("⭐ VIP فقط",   callback_data=f"bcast_vip_{fname}"),
+                types.InlineKeyboardButton("👤 عادي فقط",  callback_data=f"bcast_user_{fname}"),
+                types.InlineKeyboardButton("❌ إلغاء",      callback_data=f"bcast_cancel_{fname}"),
+            )
+            bot.send_message(call.message.chat.id,
+                f"📢 *رسالة بعد رفع* `{fname}`\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"لمن تريد إرسال الرسالة؟",
+                parse_mode="Markdown", reply_markup=mk)
+
+        elif tgt.startswith("all_") or tgt.startswith("vip_") or tgt.startswith("user_"):
+            parts    = tgt.split("_", 1)
+            target   = parts[0]
+            fname    = parts[1] if len(parts) > 1 else ""
+            role_map = {"all": None, "vip": ROLE_VIP, "user": ROLE_USER}
+            labels   = {"all": "الكل", "vip": "VIP فقط", "user": "عادي فقط"}
+            user_states[uid] = {
+                "action":      "bcast_with_file",
+                "file":        fname,
+                "role_filter": role_map.get(target),
+                "label":       labels.get(target, "الكل"),
+            }
+            bot.send_message(call.message.chat.id,
+                f"📢 رسالة لـ *{labels.get(target,'الكل')}* مع معلومات `{fname}`\n"
+                f"اكتب نص الرسالة اللي هتتبعث:\n"
+                f"_(هيتضاف تلقائياً اسم الملف وحالته)_",
+                parse_mode="Markdown")
+
+        elif tgt.startswith("cancel_"):
+            user_states.pop(uid, None)
+            bot.send_message(call.message.chat.id, "❌ تم إلغاء الإرسال.")
+
+
+        bot.answer_callback_query(call.id)
+
+        if tgt.startswith("reply_"):
+            target_uid = tgt[6:]
+            if not is_staff(uid):
+                bot.answer_callback_query(call.id, "❌ للأدمن فقط"); return
+            admin_chat_with[uid] = target_uid
+            name = db["users"].get(target_uid, {}).get("name", "؟")
+            mk_cancel = types.InlineKeyboardMarkup()
+            mk_cancel.add(types.InlineKeyboardButton("❌ إنهاء المحادثة", callback_data="chat_end"))
+            bot.send_message(call.message.chat.id,
+                f"💬 *أنت الآن تتحدث مع:*\n"
+                f"👤 *{name}* | 🆔 `{target_uid}`\n\n"
+                f"📝 اكتب رسالتك أو أرسل ملف/صورة/صوت وهيوصله مباشرة.\n"
+                f"اضغط ❌ إنهاء المحادثة للخروج.",
+                parse_mode="Markdown",
+                reply_markup=mk_cancel)
+            # إشعار المستخدم إن الأدمن بدأ محادثة
+            user_chat_open.add(target_uid)
+            try:
+                mk_user = types.InlineKeyboardMarkup()
+                mk_user.add(types.InlineKeyboardButton("💬 رد", callback_data="open_chat"))
+                bot.send_message(int(target_uid),
+                    "📩 *الأدمن فتح معك محادثة مباشرة!*\n"
+                    "اكتب ردك وهيوصله فوراً 🚀",
+                    parse_mode="Markdown",
+                    reply_markup=mk_user)
+            except: pass
+
+        elif tgt == "end":
+            target = admin_chat_with.pop(uid, None)
+            if target:
+                user_chat_open.discard(target)
+                name = db["users"].get(target, {}).get("name", "؟")
+                bot.send_message(call.message.chat.id,
+                    f"✅ انتهت المحادثة مع *{name}*.",
+                    parse_mode="Markdown",
+                    reply_markup=get_kb(uid))
+                try:
+                    bot.send_message(int(target),
+                        "🔚 الأدمن أنهى المحادثة.\nلو عندك استفسار اضغط 🎫 تذكرة دعم.",
+                        reply_markup=get_kb(target))
+                except: pass
+            else:
+                bot.send_message(call.message.chat.id, "مفيش محادثة مفتوحة.", reply_markup=get_kb(uid))
+
+        elif tgt.startswith("ignore_"):
+            target_uid = tgt[7:]
+            user_chat_open.discard(target_uid)
+            bot.send_message(call.message.chat.id, f"🔕 تم تجاهل رسالة `{target_uid}`.", parse_mode="Markdown")
+
+        elif tgt.startswith("unblock_"):
+            target_uid = tgt[8:]
+            blocked = db.get("chat_blocked", [])
+            if target_uid in blocked:
+                blocked.remove(target_uid)
+                save()
+            name = db["users"].get(target_uid, {}).get("name", "؟")
+            bot.answer_callback_query(call.id, f"✅ رُفع حظر {name}")
+            bot.send_message(call.message.chat.id, f"✅ تم رفع حظر التواصل عن *{name}*.", parse_mode="Markdown")
+
+        elif tgt.startswith("block_"):
+            target_uid = tgt[6:]
+            user_chat_open.discard(target_uid)
+            db.setdefault("chat_blocked", [])
+            if target_uid not in db["chat_blocked"]:
+                db["chat_blocked"].append(target_uid)
+                save()
+            name = db["users"].get(target_uid, {}).get("name", "؟")
+            bot.send_message(call.message.chat.id,
+                f"🔕 تم حظر التواصل من *{name}*.\nلن تصله رسائله بعد الآن.", parse_mode="Markdown")
+
+
+
+    elif act == "open":
+        if tgt == "chat":
+            bot.answer_callback_query(call.id)
+            user_chat_open.add(uid)
+            mk_cancel = types.InlineKeyboardMarkup()
+            mk_cancel.add(types.InlineKeyboardButton("❌ إنهاء", callback_data="chat_end_user"))
+            bot.send_message(call.message.chat.id,
+                "💬 *وضع التواصل مع الأدمن مفعّل!*\n"
+                "اكتب رسالتك وستصل للأدمن مباشرة.\n"
+                "اضغط ❌ إنهاء للخروج.",
+                parse_mode="Markdown",
+                reply_markup=mk_cancel)
+
+        elif tgt == "chat_end_user":
+            user_chat_open.discard(uid)
+            bot.send_message(call.message.chat.id,
+                "✅ تم إنهاء وضع التواصل.",
+                reply_markup=get_kb(uid))
+
+
     """تطبيق إجراء على مستخدم"""
     if target_uid not in db["users"]:
         bot.answer_callback_query(call.id,"❌ مستخدم غير موجود"); return
@@ -2371,6 +3542,38 @@ def run_shell(chat_id, cmd):
 # ══════════════════════════════════════════════════════════════
 #  المعالج الرئيسي
 # ══════════════════════════════════════════════════════════════
+@bot.message_handler(content_types=['photo'])
+def handle_photo(m):
+    uid = reg_user(m)
+    if uid in user_chat_open and not is_staff(uid):
+        if uid not in db.get("chat_blocked", []):
+            _send_to_admin(uid, m.caption, m)
+            bot.reply_to(m, "📨 الصورة وصلت للأدمن ✅")
+        else:
+            bot.reply_to(m, "🔕 تواصلك محظور.")
+        return
+    if is_staff(uid) and uid in admin_chat_with:
+        target = admin_chat_with[uid]
+        name = db["users"].get(target, {}).get("name", "؟")
+        ok = _send_to_user(target, None, m)
+        bot.reply_to(m, f"✅ الصورة وصلت لـ *{name}*" if ok else f"❌ فشل", parse_mode="Markdown")
+
+@bot.message_handler(content_types=['voice'])
+def handle_voice(m):
+    uid = reg_user(m)
+    if uid in user_chat_open and not is_staff(uid):
+        if uid not in db.get("chat_blocked", []):
+            _send_to_admin(uid, None, m)
+            bot.reply_to(m, "📨 الرسالة الصوتية وصلت للأدمن ✅")
+        else:
+            bot.reply_to(m, "🔕 تواصلك محظور.")
+        return
+    if is_staff(uid) and uid in admin_chat_with:
+        target = admin_chat_with[uid]
+        name = db["users"].get(target, {}).get("name", "؟")
+        ok = _send_to_user(target, None, m)
+        bot.reply_to(m, f"✅ الصوت وصل لـ *{name}*" if ok else f"❌ فشل", parse_mode="Markdown")
+
 @bot.message_handler(func=lambda m: True)
 def main_handler(m):
     uid  = reg_user(m)
@@ -2384,6 +3587,58 @@ def main_handler(m):
     # ══ Blacklist ══════════════════════════
     if is_blacklisted(uid):
         bot.reply_to(m, "🚫 أنت محظور من استخدام البوت."); return
+
+    # ══════════════════════════════════════════════════════
+    #  📡 نظام المحادثة المباشرة — توجيه الرسائل
+    # ══════════════════════════════════════════════════════
+
+    # ➤ الأدمن في وضع المحادثة → أرسل للمستخدم
+    if is_staff(uid) and uid in admin_chat_with:
+        target = admin_chat_with[uid]
+        # زر إنهاء المحادثة
+        if text and text.strip() in ["❌ إنهاء المحادثة", "/end", "end"]:
+            admin_chat_with.pop(uid, None)
+            user_chat_open.discard(target)
+            name = db["users"].get(target, {}).get("name", "؟")
+            bot.reply_to(m, f"✅ انتهت المحادثة مع *{name}*.", parse_mode="Markdown", reply_markup=get_kb(uid))
+            try:
+                bot.send_message(int(target),
+                    "🔚 الأدمن أنهى المحادثة.\nلو عندك استفسار اضغط 🎫 تذكرة دعم.",
+                    reply_markup=get_kb(target))
+            except: pass
+            return
+        # إرسال الرسالة/الملف/الصورة/الصوت للمستخدم
+        name = db["users"].get(target, {}).get("name", "؟")
+        ok = _send_to_user(target, text, m)
+        if ok:
+            bot.reply_to(m, f"✅ وصلت لـ *{name}*", parse_mode="Markdown")
+        else:
+            bot.reply_to(m, f"❌ فشل الإرسال لـ `{target}` — ربما حذف البوت")
+            admin_chat_with.pop(uid, None)
+        return
+
+    # ➤ المستخدم في وضع التواصل → أرسل للأدمن
+    if uid in user_chat_open and not is_staff(uid):
+        if text and text.strip() in ["❌ إنهاء", "/end"]:
+            user_chat_open.discard(uid)
+            bot.reply_to(m, "✅ تم إنهاء وضع التواصل.", reply_markup=get_kb(uid))
+            # إشعار الأدمن
+            for a_uid, t_uid in list(admin_chat_with.items()):
+                if t_uid == uid:
+                    admin_chat_with.pop(a_uid, None)
+                    name = db["users"].get(uid, {}).get("name", "؟")
+                    try: bot.send_message(int(a_uid), f"🔚 *{name}* أنهى المحادثة.", parse_mode="Markdown", reply_markup=get_kb(a_uid))
+                    except: pass
+            return
+        # إرسال للأدمن
+        if uid not in db.get("chat_blocked", []):
+            _send_to_admin(uid, text, m)
+            bot.reply_to(m, "📨 وصلت للأدمن ✅")
+        else:
+            bot.reply_to(m, "🔕 تواصلك محظور حالياً.")
+        return
+
+
 
     # ══ فحص الروابط المشبوهة ══════════════
     if text and contains_suspicious_url(text) and role == ROLE_USER:
@@ -2409,6 +3664,14 @@ def main_handler(m):
         "🕐 وقت التشغيل","❌ خروج Shell","🔒 قفل البوت","🛡 أمان الملفات",
         "🖥 الاستضافة","⚙️ الحاويات","👥 المستخدمون","📈 تقرير فوري",
         "💀 إيقاف الكل","🔄 تحديث البوت","💾 باك أب","🛡 لوحة الأمان",
+        # أزرار الأقسام
+        "📦 قسم الرفع","👑 قسم الأدمن","🖥 قسم السيرفر",
+        "👥 قسم المستخدمين","💬 قسم التواصل","🔧 قسم الأدوات",
+        "🔙 الرئيسية",
+        # أزرار داخل الأقسام
+        "🔄 إعادة تشغيل ملف","📊 إحصائيات المستخدمين",
+        "📬 صندوق الرسائل","💬 محادثة مستخدم","🔕 المحظورون من التواصل",
+        "💬 تواصل مع الأدمن",
     }
     if user_states.get(uid, {}).get("action") == "ai_chat":
         if text not in KEYBOARD_BUTTONS and not text.startswith("/"):
@@ -2541,8 +3804,85 @@ def main_handler(m):
                 bot.reply_to(m, "❌ المستخدم مش موجود"); return
             bot.reply_to(m, f"✅ تم إرسال {amount} نقطة لـ {target_uid}")
 
-        elif act == "open_ticket":
-            tid = open_ticket(uid, text)
+        elif act == "edit_token":
+            fname   = state.get("file", "")
+            then_id = state.get("then_id", False)
+            new_tok = text.strip()
+            # تحقق من شكل التوكن
+            import re as _re
+            if not _re.match(r'^\d{8,12}:[A-Za-z0-9_-]{35,}$', new_tok):
+                bot.reply_to(m,
+                    "❌ التوكن غير صحيح!\n"
+                    "الشكل الصحيح: `1234567890:AAFxxx...`\n"
+                    "أرسله مرة تانية أو احصل عليه من @BotFather",
+                    parse_mode="Markdown")
+                user_states[uid] = state  # أعد الـ state
+                return
+            # تعديل التوكن في الملف
+            ok, msg_result = _edit_file_value(fname, "token", new_tok)
+            if ok:
+                if then_id:
+                    # انتقل لخطوة الـ ID
+                    user_states[uid] = {"action": "edit_admin_id", "file": fname, "from_both": True}
+                    mk_skip = types.InlineKeyboardMarkup()
+                    mk_skip.add(
+                        types.InlineKeyboardButton("⏭ تخطي الـ ID", callback_data=f"edit_skip_id_{fname}"),
+                        types.InlineKeyboardButton("❌ إلغاء",        callback_data=f"edit_cancel_{fname}"),
+                    )
+                    bot.reply_to(m,
+                        f"✅ *تم تعديل التوكن!*\n\n"
+                        f"*الخطوة 2/2:* أرسل الـ Admin ID الجديد:\n"
+                        f"مثال: `123456789`\n\n"
+                        f"_(يمكنك الضغط ⏭ تخطي إذا لا تريد تعديله)_",
+                        parse_mode="Markdown", reply_markup=mk_skip)
+                else:
+                    # انتهى التعديل — اعرض أزرار الرفع
+                    _show_edit_done(m, fname, "✅ تم تعديل التوكن بنجاح!")
+            else:
+                bot.reply_to(m, f"❌ فشل تعديل التوكن:\n`{msg_result}`", parse_mode="Markdown")
+                user_states[uid] = state
+
+        elif act == "edit_admin_id":
+            fname       = state.get("file", "")
+            from_both   = state.get("from_both", False)
+            new_id      = text.strip()
+            if not new_id.isdigit() or len(new_id) < 5:
+                bot.reply_to(m,
+                    "❌ الـ ID غير صحيح! لازم يكون أرقام فقط.\n"
+                    "مثال: `123456789`\n"
+                    "استخدم /id عشان تعرف ID بتاعك",
+                    parse_mode="Markdown")
+                user_states[uid] = state
+                return
+            ok, msg_result = _edit_file_value(fname, "admin_id", new_id)
+            if ok:
+                label = "✅ تم تعديل التوكن والـ ID بنجاح!" if from_both else "✅ تم تعديل الـ ID بنجاح!"
+                _show_edit_done(m, fname, label)
+            else:
+                bot.reply_to(m, f"❌ فشل تعديل الـ ID:\n`{msg_result}`", parse_mode="Markdown")
+                user_states[uid] = state
+
+        elif act == "bcast_with_file":
+            fname       = state.get("file", "")
+            role_filter = state.get("role_filter")
+            label       = state.get("label", "الكل")
+            info        = db["files"].get(fname, {})
+            active_txt  = "✅ شغّال" if info.get("active") else "⏸ متوقف"
+            ext_icon    = {"py":"🐍","js":"⚡","sh":"🖥️"}.get(os.path.splitext(fname)[1].lstrip("."), "📄")
+            full_msg    = (
+                f"📢 *رسالة من الأدمن*\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"{text}\n\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"{ext_icon} `{fname}` | {active_txt}"
+            )
+            count = notify_all(full_msg, role_filter)
+            bot.reply_to(m,
+                f"📢 *تم الإرسال لـ {count} مستخدم ({label})*\n"
+                f"الرسالة:\n{text[:200]}",
+                parse_mode="Markdown")
+
+
             bot.reply_to(m,
                 f"🎫 تم فتح تذكرة #{tid}\n"
                 f"الأدمن هيرد عليك قريباً ✅")
@@ -2652,7 +3992,110 @@ def main_handler(m):
             run_shell(m.chat.id, text)
         return
 
+    # ══ أزرار الأقسام الرئيسية ════════════
+    if text == "🔙 الرئيسية":
+        bot.reply_to(m, "🏠 الرئيسية", reply_markup=get_kb(uid)); return
+
+    if text == "📦 قسم الرفع":
+        if not is_staff(uid): return
+        bot.reply_to(m,
+            "📦 *قسم الرفع والاستضافة*\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            f"📂 ملفات: `{len(db['files'])}` | ⚡ شغّالة: `{len(running_procs)}`\n"
+            f"🚨 حجر: `{len(db.get('quarantine',[]))}`",
+            parse_mode="Markdown",
+            reply_markup=kb_section_upload()); return
+
+    if text == "👑 قسم الأدمن":
+        if not is_staff(uid): return
+        s = db["settings"]
+        bot.reply_to(m,
+            f"👑 *قسم الأدمن*\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            f"🔒 مقفول: {'✅' if db.get('locked') else '❌'} | "
+            f"🔧 صيانة: {'✅' if s.get('maintenance') else '❌'}\n"
+            f"🎫 تذاكر مفتوحة: `{sum(1 for t in db['tickets'].values() if t.get('status')=='open')}`",
+            parse_mode="Markdown",
+            reply_markup=kb_section_admin()); return
+
+    if text == "🖥 قسم السيرفر":
+        if not is_staff(uid): return
+        import psutil as _ps
+        cpu  = _ps.cpu_percent(interval=0.5)
+        mem  = _ps.virtual_memory().percent
+        disk = _ps.disk_usage('/').percent
+        bot.reply_to(m,
+            f"🖥 *قسم السيرفر*\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            f"CPU: `{cpu}%` | RAM: `{mem}%` | Disk: `{disk}%`",
+            parse_mode="Markdown",
+            reply_markup=kb_section_server()); return
+
+    if text == "👥 قسم المستخدمين":
+        if not is_staff(uid): return
+        roles = {}
+        for u, info in db["users"].items():
+            r = info.get("role", "user")
+            roles[r] = roles.get(r, 0) + 1
+        bot.reply_to(m,
+            f"👥 *قسم المستخدمين*\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            f"الكل: `{len(db['users'])}` | "
+            f"⭐ VIP: `{roles.get('vip',0)}` | "
+            f"🚫 محظور: `{roles.get('banned',0)}`",
+            parse_mode="Markdown",
+            reply_markup=kb_section_users()); return
+
+    if text == "💬 قسم التواصل":
+        if not is_staff(uid): return
+        active_chats = len(admin_chat_with)
+        waiting      = len(user_chat_open)
+        open_tix     = sum(1 for t in db["tickets"].values() if t.get("status") == "open")
+        bot.reply_to(m,
+            f"💬 *قسم التواصل*\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            f"📡 محادثات مفتوحة: `{active_chats}`\n"
+            f"⏳ ينتظرون ردك: `{waiting}`\n"
+            f"🎫 تذاكر مفتوحة: `{open_tix}`",
+            parse_mode="Markdown",
+            reply_markup=kb_section_chat()); return
+
+    if text == "🔧 قسم الأدوات":
+        if not is_staff(uid): return
+        bot.reply_to(m,
+            "🔧 *قسم الأدوات*",
+            parse_mode="Markdown",
+            reply_markup=kb_section_tools()); return
+
+    if text == "🔄 إعادة تشغيل ملف":
+        if not is_staff(uid): return
+        running = [f for f in running_procs]
+        if not running:
+            bot.reply_to(m, "❌ مفيش ملفات شغالة حالياً."); return
+        mk2 = types.InlineKeyboardMarkup(row_width=2)
+        for f in running[:10]:
+            mk2.add(types.InlineKeyboardButton(f"🔄 {f}", callback_data=f"rst_{f}"))
+        bot.reply_to(m, "اختار الملف اللي عايز تعيد تشغيله:", reply_markup=mk2); return
+
+    if text == "📊 إحصائيات المستخدمين":
+        if not is_staff(uid): return
+        roles = {}
+        for u, info in db["users"].items():
+            r = info.get("role", "user")
+            roles[r] = roles.get(r, 0) + 1
+        bot.reply_to(m,
+            f"📊 *إحصائيات المستخدمين*\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            f"👥 الكل: `{len(db['users'])}`\n"
+            f"🔱 مالك: `{roles.get('owner',1)}`\n"
+            f"👑 أدمن: `{roles.get('admin',0)}`\n"
+            f"⭐ VIP: `{roles.get('vip',0)}`\n"
+            f"👤 عادي: `{roles.get('user',0)}`\n"
+            f"🚫 محظور: `{roles.get('banned',0)}`",
+            parse_mode="Markdown"); return
+
     # ══ كل المستخدمين ════════════════════
+
     if text == "📂 ملفاتي" or text == "/myfiles":
         _show_files(m); return
     if text in ["ℹ️ مساعدة","ℹ️ المساعدة"]:
@@ -2733,8 +4176,103 @@ def main_handler(m):
             mk.add(types.InlineKeyboardButton(f"📋 {f}", callback_data=f"log_{f}"))
         bot.reply_to(m, "اختار الملف اللي عايز تشوف لوجه:", reply_markup=mk); return
 
-    # ══ Staff فقط ════════════════════════
-    if not is_staff(uid): return
+    if text == "💬 تواصل مع الأدمن":
+        if is_staff(uid):
+            bot.reply_to(m, "أنت أدمن — استخدم 💬 محادثة مستخدم لبدء محادثة."); return
+        if uid in db.get("chat_blocked", []):
+            bot.reply_to(m, "🔕 تواصلك مع الأدمن محظور حالياً."); return
+        user_chat_open.add(uid)
+        mk_cancel = types.InlineKeyboardMarkup()
+        mk_cancel.add(types.InlineKeyboardButton("❌ إنهاء التواصل", callback_data="open_chat_end_user"))
+        bot.reply_to(m,
+            "💬 *وضع التواصل مع الأدمن مفعّل!*\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            "✅ اكتب رسالتك أو أرسل ملف/صورة/صوت\n"
+            "وستصل للأدمن مباشرة فوراً 🚀\n\n"
+            "اضغط ❌ إنهاء التواصل للخروج.",
+            parse_mode="Markdown",
+            reply_markup=mk_cancel)
+        # إشعار الأدمن
+        name = db["users"].get(uid, {}).get("name", "؟")
+        mk_adm = types.InlineKeyboardMarkup()
+        mk_adm.add(
+            types.InlineKeyboardButton("💬 رد عليه", callback_data=f"chat_reply_{uid}"),
+            types.InlineKeyboardButton("🔕 تجاهل",   callback_data=f"chat_ignore_{uid}"),
+        )
+        try:
+            bot.send_message(ADMIN_ID,
+                f"📡 *{name}* (`{uid}`) فتح وضع التواصل معك!",
+                parse_mode="Markdown", reply_markup=mk_adm)
+        except: pass
+        return
+
+    # ══ للأدمن: صندوق الرسائل ════════════
+    if text == "📬 صندوق الرسائل":
+        if not is_staff(uid): return
+        active_chats = list(admin_chat_with.items())
+        open_users   = list(user_chat_open)
+        lines = []
+        if active_chats:
+            lines.append("💬 *محادثات مفتوحة:*")
+            for a, t in active_chats:
+                aname = db["users"].get(a, {}).get("name", "؟")
+                tname = db["users"].get(t, {}).get("name", "؟")
+                lines.append(f"  👑 {aname} ↔️ 👤 {tname}")
+        if open_users:
+            lines.append("\n📡 *ينتظرون ردك:*")
+            mk2 = types.InlineKeyboardMarkup(row_width=2)
+            for u in open_users[:10]:
+                name = db["users"].get(u, {}).get("name", "؟")
+                lines.append(f"  👤 {name} (`{u}`)")
+                mk2.add(types.InlineKeyboardButton(f"💬 {name[:15]}", callback_data=f"chat_reply_{u}"))
+            if not lines:
+                bot.reply_to(m, "📬 الصندوق فارغ — لا توجد محادثات مفتوحة."); return
+            bot.reply_to(m,
+                "📬 *صندوق الرسائل*\n━━━━━━━━━━━━━━━━━━━\n" + "\n".join(lines),
+                parse_mode="Markdown", reply_markup=mk2)
+            return
+        if not lines:
+            bot.reply_to(m, "📬 الصندوق فارغ."); return
+        bot.reply_to(m,
+            "📬 *صندوق الرسائل*\n━━━━━━━━━━━━━━━━━━━\n" + "\n".join(lines),
+            parse_mode="Markdown")
+        return
+
+    if text == "💬 محادثة مستخدم":
+        if not is_staff(uid): return
+        # اختيار مستخدم للمحادثة
+        users_list = [(u, info) for u, info in db["users"].items()
+                      if int(u) != ADMIN_ID and u not in [str(a) for a in ADMIN_IDS]]
+        if not users_list:
+            bot.reply_to(m, "👥 لا يوجد مستخدمون بعد."); return
+        mk2 = types.InlineKeyboardMarkup(row_width=2)
+        for u, info in users_list[-20:]:
+            role_e = {"owner":"🔱","admin":"👑","vip":"⭐","user":"👤"}.get(info.get("role","user"),"👤")
+            mk2.add(types.InlineKeyboardButton(
+                f"{role_e} {info.get('name','؟')[:15]}",
+                callback_data=f"chat_reply_{u}"
+            ))
+        bot.reply_to(m, "💬 *اختر المستخدم اللي عايز تكلمه:*",
+            parse_mode="Markdown", reply_markup=mk2)
+        return
+
+    if text == "🔕 المحظورون من التواصل":
+        if not is_staff(uid): return
+        blocked = db.get("chat_blocked", [])
+        if not blocked:
+            bot.reply_to(m, "✅ لا يوجد محظورون من التواصل."); return
+        mk2 = types.InlineKeyboardMarkup(row_width=2)
+        lines = []
+        for u in blocked:
+            name = db["users"].get(u, {}).get("name", "؟")
+            lines.append(f"🔕 `{u}` — {name}")
+            mk2.add(types.InlineKeyboardButton(f"✅ رفع حظر {name[:12]}", callback_data=f"chat_unblock_{u}"))
+        bot.reply_to(m,
+            f"🔕 *محظورو التواصل ({len(blocked)}):*\n" + "\n".join(lines),
+            parse_mode="Markdown", reply_markup=mk2)
+        return
+
+
 
     if text == "🖥 الاستضافة":
         total = sum(v.get("size",0) for v in db["files"].values())//1024
@@ -3224,9 +4762,208 @@ def main_handler(m):
         bot.reply_to(m, "📣 لمن تريد الإشعار؟", reply_markup=mk)
 
 # ══════════════════════════════════════════════════════════════
-#  دوال مساعدة
+#  إشعار الأدمن عند رفع ملف — مع رسالة تأكيد للمستخدم
 # ══════════════════════════════════════════════════════════════
-def _show_files(m):
+def _edit_file_value(fname: str, field: str, new_val: str) -> tuple:
+    """
+    تعديل التوكن أو الـ Admin ID في ملف Python مباشرة
+    field: 'token' | 'admin_id'
+    يرجع (True, "ok") أو (False, "سبب الفشل")
+    """
+    import re as _re
+    if fname not in db["files"]:
+        return False, "الملف غير موجود في قاعدة البيانات"
+    path = db["files"][fname].get("path", "")
+    if not os.path.exists(path):
+        return False, "الملف غير موجود على الديسك"
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            content = f.read()
+        original = content
+
+        if field == "token":
+            # استبدال كل أشكال التوكن المعروفة
+            patterns = [
+                # TOKEN = "xxx" أو TOKEN = 'xxx'
+                (r'(TOKEN\s*=\s*os\.environ\.get\(["\'][^"\']+["\'],\s*)["\'][^"\']+["\'](\))',
+                 lambda m2: f'{m2.group(1)}"{new_val}"{m2.group(2)}'),
+                (r'(TOKEN\s*=\s*)["\'][^"\']+["\']',
+                 lambda m2: f'{m2.group(1)}"{new_val}"'),
+                # TeleBot("xxx") أو bot = TeleBot('xxx')
+                (r'(TeleBot\s*\(\s*)["\'][^"\']+["\']',
+                 lambda m2: f'{m2.group(1)}"{new_val}"'),
+                # token = "xxx"
+                (r'(token\s*=\s*)["\'][^"\']+["\']',
+                 lambda m2: f'{m2.group(1)}"{new_val}"'),
+                # BOT_TOKEN = "xxx"
+                (r'(BOT_TOKEN\s*=\s*os\.environ\.get\(["\'][^"\']+["\'],\s*)["\'][^"\']+["\'](\))',
+                 lambda m2: f'{m2.group(1)}"{new_val}"{m2.group(2)}'),
+                (r'(BOT_TOKEN\s*=\s*)["\'][^"\']+["\']',
+                 lambda m2: f'{m2.group(1)}"{new_val}"'),
+                # أي توكن بشكل رقم:حروف داخل quotes
+                (r'["\'](\d{8,12}:[A-Za-z0-9_\-]{35,})["\']',
+                 lambda m2: f'"{new_val}"'),
+            ]
+
+        elif field == "admin_id":
+            patterns = [
+                # ADMIN_ID = os.environ.get("...", "123")
+                (r'(ADMIN_ID\s*=\s*int\(os\.environ\.get\(["\'][^"\']+["\'],\s*["\']?)\d+(["\']?\)\))',
+                 lambda m2: f'{m2.group(1)}{new_val}{m2.group(2)}'),
+                # ADMIN_ID = int("123") أو ADMIN_ID = 123
+                (r'(ADMIN_ID\s*=\s*int\(\s*)["\']?\d+["\']?(\s*\))',
+                 lambda m2: f'{m2.group(1)}"{new_val}"{m2.group(2)}'),
+                (r'(ADMIN_ID\s*=\s*)\d+',
+                 lambda m2: f'{m2.group(1)}{new_val}'),
+                # ADMIN_IDS = [int(x) for x in os.environ.get("...", "123").split(",")]
+                (r'(ADMIN_IDS\s*=\s*\[int\(x\) for x in os\.environ\.get\(["\'][^"\']+["\'],\s*["\'])\d+(["\'])',
+                 lambda m2: f'{m2.group(1)}{new_val}{m2.group(2)}'),
+                # owner_id = 123 / admin_id = 123
+                (r'(owner_id\s*=\s*)\d+',
+                 lambda m2: f'{m2.group(1)}{new_val}'),
+                (r'(admin_id\s*=\s*)\d+',
+                 lambda m2: f'{m2.group(1)}{new_val}'),
+            ]
+        else:
+            return False, "نوع التعديل غير معروف"
+
+        changed = False
+        for pattern, replacer in patterns:
+            new_content = _re.sub(pattern, replacer, content)
+            if new_content != content:
+                content = new_content
+                changed = True
+                break  # أول استبدال ناجح يكفي
+
+        if not changed:
+            return False, "لم يتم العثور على القيمة في الملف — تأكد من وجودها"
+
+        # نسخة احتياطية
+        save_file_version(fname, path)
+
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(content)
+
+        log.info(f"Edited {field} in {fname}")
+        return True, "ok"
+
+    except Exception as e:
+        log.error(f"_edit_file_value: {e}")
+        return False, str(e)
+
+
+def _show_edit_done(m, fname: str, label: str):
+    """عرض رسالة اكتمال التعديل مع أزرار الخيارات"""
+    mk = types.InlineKeyboardMarkup(row_width=2)
+    mk.add(
+        types.InlineKeyboardButton("🚀 رفع وتشغيل الآن",    callback_data=f"tog_{fname}"),
+        types.InlineKeyboardButton("📤 تحميل الملف المعدّل", callback_data=f"dwn_{fname}"),
+        types.InlineKeyboardButton("🔑 تعديل توكن تاني",     callback_data=f"edit_token_{fname}"),
+        types.InlineKeyboardButton("👤 تعديل ID تاني",       callback_data=f"edit_id_{fname}"),
+        types.InlineKeyboardButton("📋 لوج",                 callback_data=f"log_{fname}"),
+        types.InlineKeyboardButton("🗑 حذف",                 callback_data=f"del_{fname}"),
+    )
+    bot.reply_to(m,
+        f"{label}\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"📄 الملف: `{fname}`\n\n"
+        f"اختر الخطوة التالية:",
+        parse_mode="Markdown",
+        reply_markup=mk)
+
+
+
+    """
+    ✅ يرسل إشعار للأدمن الرئيسي عند رفع أي ملف من أي مستخدم
+    ✅ يرسل رسالة تأكيد جميلة للمستخدم نفسه
+    """
+    name      = db["users"].get(uid, {}).get("name", "؟")
+    role      = get_role(uid)
+    role_e    = {"owner": "🔱", "admin": "👑", "vip": "⭐", "user": "👤"}.get(role, "👤")
+    active_st = "✅ شغّال" if db["files"].get(fname, {}).get("active") else "⏸ متوقف"
+    size_str  = f"{fsize // 1024} KB" if fsize >= 1024 else f"{fsize} B"
+    total_files = len([f for f, v in db["files"].items() if v.get("owner") == uid])
+    now_str   = datetime.now().strftime('%H:%M:%S')
+    ext_icons = {".py": "🐍", ".js": "⚡", ".sh": "🖥️", ".json": "📋",
+                 ".txt": "📄", ".env": "🔐", ".yaml": "📑", ".yml": "📑", ".toml": "⚙️"}
+    ext_icon  = ext_icons.get(ext, "📄")
+
+    # ─── رسالة الأدمن ───────────────────────────────────────
+    admin_markup = types.InlineKeyboardMarkup(row_width=3)
+    admin_markup.add(
+        types.InlineKeyboardButton("▶️ تشغيل",    callback_data=f"tog_{fname}"),
+        types.InlineKeyboardButton("📋 لوج",       callback_data=f"log_{fname}"),
+        types.InlineKeyboardButton("🗑 حذف",       callback_data=f"del_{fname}"),
+        types.InlineKeyboardButton("📥 تحميل",     callback_data=f"dwn_{fname}"),
+        types.InlineKeyboardButton("🔎 فحص",       callback_data=f"chk_{fname}"),
+        types.InlineKeyboardButton("👤 المستخدم",  callback_data=f"uview_{uid}"),
+    )
+
+    admin_text = (
+        f"📤 *ملف جديد مرفوع!*\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"{ext_icon} الملف: `{fname}`\n"
+        f"💾 الحجم: `{size_str}`\n"
+        f"🕐 الوقت: `{now_str}`\n"
+        f"📂 الحالة: {active_st}\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"{role_e} المستخدم: *{name}*\n"
+        f"🆔 ID: `{uid}`\n"
+        f"📊 ملفاته الكلية: `{total_files}`"
+    )
+
+    try:
+        bot.send_message(
+            ADMIN_ID,
+            admin_text,
+            parse_mode="Markdown",
+            reply_markup=admin_markup
+        )
+    except Exception as e:
+        log.warning(f"Admin upload notify failed: {e}")
+
+    # ─── إشعار بقية الأدمنز (غير الرئيسي) ──────────────────
+    for admin in ADMIN_IDS:
+        if admin == ADMIN_ID:
+            continue
+        try:
+            bot.send_message(
+                admin,
+                f"📤 *ملف جديد*\n{ext_icon} `{fname}` | {role_e} {name} (`{uid}`) | `{size_str}`",
+                parse_mode="Markdown",
+                reply_markup=admin_markup
+            )
+        except Exception as e:
+            log.warning(f"Admin {admin} upload notify failed: {e}")
+
+    # ─── رسالة تأكيد للمستخدم (لو مش أدمن) ─────────────────
+    if not is_staff(uid):
+        confirm_markup = types.InlineKeyboardMarkup(row_width=2)
+        confirm_markup.add(
+            types.InlineKeyboardButton("▶️ تشغيل",       callback_data=f"utog_{fname}"),
+            types.InlineKeyboardButton("⏹ إيقاف",        callback_data=f"ustop_{fname}"),
+            types.InlineKeyboardButton("📋 شوف اللوج",   callback_data=f"log_{fname}"),
+            types.InlineKeyboardButton("📂 ملفاتي كلها", callback_data=f"uview_{uid}"),
+        )
+        try:
+            bot.send_message(
+                user_chat_id,
+                f"✅ *تم رفع ملفك بنجاح!*\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"{ext_icon} الملف: `{fname}`\n"
+                f"💾 الحجم: `{size_str}`\n"
+                f"🕐 الوقت: `{now_str}`\n"
+                f"📊 ملفاتك الكلية: `{total_files}`\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"⏳ انتظر — الأدمن هيراجعه ويشغّله قريباً ✅",
+                parse_mode="Markdown",
+                reply_markup=confirm_markup
+            )
+        except Exception as e:
+            log.warning(f"User upload confirm failed: {e}")
+
+
+
     uid = reg_user(m); role = get_role(uid)
     files = [f for f,v in db["files"].items()
              if v.get("owner")==uid or is_staff(uid)]
@@ -3335,4 +5072,14 @@ if __name__ == "__main__":
         except Exception as e:
             log.warning(f"Startup notify {admin}: {e}")
 
-    bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
+    bot.infinity_polling(
+        skip_pending         = True,
+        timeout              = 20,          # ↓ قلّل الـ timeout لاستجابة أسرع
+        long_polling_timeout = 20,
+        allowed_updates      = [            # استقبل فقط ما نحتاجه
+            "message", "callback_query",
+            "inline_query", "chosen_inline_result"
+        ],
+        restart_on_change    = False,
+        logger_level         = logging.WARNING,
+    )
