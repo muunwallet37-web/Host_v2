@@ -472,10 +472,14 @@ def load_db():
         "envs":      {},
         "scheduled": [],
         "quarantine":[],
-        "tickets":   {},   # ticket_id -> {uid, msg, status, replies, created}
-        "blacklist": [],   # قائمة IPs/UIDs المحظورة
-        "alerts":    [],   # إشعارات مخصصة
-        "file_versions": {},  # fname -> [list of old versions]
+        "tickets":   {},
+        "blacklist": [],
+        "alerts":    [],
+        "file_versions": {},
+        "stats": {
+            "uploads": 0, "commands": 0, "restarts": 0,
+            "blocked": 0, "kills": 0, "tickets_opened": 0,
+        },
         "settings":  {
             "max_files_per_user":   5,
             "max_file_size_kb":     500,
@@ -497,6 +501,10 @@ def load_db():
         if "settings" not in data: data["settings"] = default["settings"]
         for k,v in default["settings"].items():
             if k not in data["settings"]: data["settings"][k] = v
+        # تأكد من وجود stats دائماً
+        if "stats" not in data: data["stats"] = default["stats"]
+        for k,v in default["stats"].items():
+            if k not in data["stats"]: data["stats"][k] = v
         return data
     except: return default
 
@@ -2330,7 +2338,20 @@ def handle_upload(m):
         try:
             fname = m.document.file_name
             ext   = os.path.splitext(fname)[1].lower()
-            raw   = bot.download_file(bot.get_file(m.document.file_id).file_path)
+
+            # ── تحميل الملف مع retry ─────────────────────
+            raw = None
+            for attempt in range(3):
+                try:
+                    file_info = bot.get_file(m.document.file_id)
+                    raw = bot.download_file(file_info.file_path)
+                    break
+                except Exception as dl_err:
+                    if attempt == 2:
+                        bot.reply_to(m, f"❌ فشل تحميل الملف بعد 3 محاولات:\n`{dl_err}`", parse_mode="Markdown")
+                        return
+                    time.sleep(2)
+            if raw is None: return
 
             # ── فحص أمني — ملفات محمية ──────────────────
             if is_protected_file(fname) and not is_staff(uid):
@@ -5147,9 +5168,9 @@ if __name__ == "__main__":
 
     bot.infinity_polling(
         skip_pending         = True,
-        timeout              = 20,          # ↓ قلّل الـ timeout لاستجابة أسرع
-        long_polling_timeout = 20,
-        allowed_updates      = [            # استقبل فقط ما نحتاجه
+        timeout              = 60,
+        long_polling_timeout = 60,
+        allowed_updates      = [
             "message", "callback_query",
             "inline_query", "chosen_inline_result"
         ],
