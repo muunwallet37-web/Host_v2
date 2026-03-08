@@ -40,6 +40,11 @@ TOKEN     = os.environ.get("TOKEN",     "8666688172:AAGzjvAwltjYABuukmFlnQVrxFkK
 ADMIN_ID  = int(os.environ.get("ADMIN_ID",  "8665373093"))
 ADMIN_IDS = [int(x) for x in os.environ.get("ADMIN_IDS", "8665373093,8206539702").split(",")]
 
+# ── التحقق من صحة التوكن قبل البدء ──────────────────────────
+if not TOKEN or ":" not in TOKEN:
+    log.critical("❌ التوكن غير صحيح! تحقق من متغير TOKEN")
+    sys.exit(1)
+
 bot      = telebot.TeleBot(
     TOKEN,
     threaded      = True,
@@ -50,19 +55,6 @@ executor = ThreadPoolExecutor(
     max_workers  = 200,
     thread_name_prefix = "elite_worker"
 )
-
-# ── cache سريع للـ keyboard (يمنع إعادة البناء في كل طلب) ──
-_kb_cache: dict = {}
-
-def _cached_kb(uid: str):
-    role = get_role(uid)
-    if role not in _kb_cache:
-        _kb_cache[role] = {
-            "owner": kb_owner, "admin": kb_admin,
-            "vip": kb_vip, "user": kb_user,
-        }.get(role, kb_user)()
-    return _kb_cache[role]
-
 
 BOT_START_TIME = time.time()
 
@@ -520,6 +512,7 @@ def safe_edit(chat_id, msg_id, text: str, **kwargs):
             log.error(f"safe_edit: {e}")
 
 
+def load_db():
     default = {
         "users":     {},
         "files":     {},
