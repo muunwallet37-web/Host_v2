@@ -273,7 +273,7 @@ def is_spam(uid:str) -> bool:
         failed_cmds[uid] += 1
         if failed_cmds[uid] >= 3:
             suspicious.add(uid)
-            try: safe_send(ADMIN_ID, f"🚨 مستخدم مشبوه: `{uid}` — spam متكرر")
+            try: safe_send(ADMIN_ID, f"🚨 مستخدم مشبوه: {uid} — spam متكرر")
             except: pass
         return True
     return False
@@ -1416,7 +1416,7 @@ def install_req_file(path:str, chat_id:int=None) -> bool:
             return True
         else:
             out = (r.stdout+r.stderr).strip()
-            if chat_id: safe_send(chat_id, f"⚠️ خطأ:\n```\n{out[-1500:]}\n```")
+            if chat_id: safe_send(chat_id, f"⚠️ خطأ:\n\n{out[-1500:]}\n")
             return False
     except: return False
 
@@ -1529,7 +1529,7 @@ def auto_restart_watcher(name:str, path:str):
         if info and info["proc"].poll() is not None:
             db["stats"]["restarts"] = db["stats"].get("restarts",0)+1; save()
             launch(path, name)
-            try: safe_send(ADMIN_ID, f"🔁 إعادة تشغيل تلقائية: `{name}`")
+            try: safe_send(ADMIN_ID, f"🔁 إعادة تشغيل تلقائية: {name}")
             except: pass
 
 def enable_ar(name:str, path:str):
@@ -1549,7 +1549,7 @@ def scheduler():
                     if task["name"] in db["files"]:
                         launch(db["files"][task["name"]]["path"], task["name"])
                         task["done"] = True; save()
-                        safe_send(ADMIN_ID, f"⏰ *نُفِّذت:* `{task['name']}`")
+                        safe_send(ADMIN_ID, f"⏰ نُفِّذت: {task['name']}")
             except: pass
 
 threading.Thread(target=scheduler, daemon=True).start()
@@ -1614,7 +1614,7 @@ def crash_watcher():
                         db["files"][name]["active"]  = False
                         save()
                     for admin in ADMIN_IDS:
-                        try: safe_send(admin, f"💥 توقف: `{name}`")
+                        try: safe_send(admin, f"💥 توقف: {name}")
                         except: pass
                     if owner and owner not in [str(a) for a in ADMIN_IDS]:
                         try:
@@ -2147,7 +2147,7 @@ def cmd_myfiles(m):
 
 @bot.message_handler(commands=['id'])
 def cmd_id(m):
-    safe_reply(m, f"🆔 ID بتاعك: `{m.from_user.id}`")
+    safe_reply(m, f"🆔 ID بتاعك: {m.from_user.id}")
 
 @bot.message_handler(commands=['stats'])
 def cmd_stats(m):
@@ -2159,11 +2159,11 @@ def cmd_stop(m):
     if not is_staff(uid): return
     parts = m.text.split(maxsplit=1)
     if len(parts) < 2:
-        safe_reply(m, "الاستخدام: `/stop اسم_الملف`"); return
+        safe_reply(m, "الاستخدام: /stop اسم_الملف"); return
     fname = parts[1].strip()
     if fname in db["files"]:
         stop_file(fname)
-        safe_reply(m, f"⏹ تم إيقاف `{fname}`")
+        safe_reply(m, f"⏹ تم إيقاف {fname}")
     else:
         safe_reply(m, f"❌ الملف غير موجود")
 
@@ -2173,11 +2173,11 @@ def cmd_run(m):
     if not is_staff(uid): return
     parts = m.text.split(maxsplit=1)
     if len(parts) < 2:
-        safe_reply(m, "الاستخدام: `/run اسم_الملف`"); return
+        safe_reply(m, "الاستخدام: /run اسم_الملف"); return
     fname = parts[1].strip()
     if fname in db["files"]:
         launch(db["files"][fname]["path"], fname)
-        safe_reply(m, f"🚀 تم تشغيل `{fname}`")
+        safe_reply(m, f"🚀 تم تشغيل {fname}")
     else:
         safe_reply(m, f"❌ الملف غير موجود")
 
@@ -2360,7 +2360,7 @@ def handle_upload(m):
         target = admin_chat_with[uid]
         name = db["users"].get(target, {}).get("name", "؟")
         ok = _send_to_user(target, None, m)
-        safe_reply(m, f"✅ الملف وصل لـ *{name}*" if ok else f"❌ فشل الإرسال لـ `{target}`")
+        safe_reply(m, f"✅ الملف وصل لـ {name}" if ok else f"❌ فشل الإرسال لـ {target}")
         return
 
     # لو البوت مقفول والمستخدم مش أدمن
@@ -2577,7 +2577,7 @@ def callbacks(call):
                 lines = f.readlines()[-30:]
             out = "".join(lines).strip() or "(فارغ)"
             if len(out)>3500: out="..."+out[-3500:]
-            safe_send(call.message.chat.id, f"📋 *{tgt}*\n```\n{out}\n```")
+            safe_send(call.message.chat.id, f"📋 {tgt}\n\n{out}\n")
         else:
             safe_send(call.message.chat.id,"📋 لا يوجد لوج.")
 
@@ -2631,7 +2631,7 @@ def callbacks(call):
         bot.answer_callback_query(call.id)
         info = running_procs.get(tgt)
         if not info:
-            safe_send(call.message.chat.id, f"❌ `{tgt}` غير مشغّل."); return
+            safe_send(call.message.chat.id, f"❌ {tgt} غير مشغّل."); return
         try:
             p = psutil.Process(info["pid"])
             up = int(time.time()-info["started"])
@@ -2658,13 +2658,13 @@ def callbacks(call):
             types.InlineKeyboardButton("➕ إضافة",    callback_data=f"envadd_{tgt}"),
             types.InlineKeyboardButton("🗑 مسح",      callback_data=f"envclear_{tgt}")
         )
-        safe_send(call.message.chat.id, f"🌍 *ENV: {tgt}*\n{text}", reply_markup=mk)
+        safe_send(call.message.chat.id, f"🌍 ENV: {tgt}\n{text}", reply_markup=mk)
 
     elif act == "envadd":
         if only_staff(): return
         bot.answer_callback_query(call.id)
         user_states[uid] = {"action":"add_env","file":tgt}
-        safe_send(call.message.chat.id, "🌍 أرسل: `KEY=VALUE`")
+        safe_send(call.message.chat.id, "🌍 أرسل: KEY=VALUE")
 
     elif act == "envclear":
         if only_staff(): return
@@ -2675,7 +2675,7 @@ def callbacks(call):
         if only_staff(): return
         bot.answer_callback_query(call.id)
         user_states[uid] = {"action":"schedule","file":tgt}
-        safe_send(call.message.chat.id, f"⏰ أرسل الوقت:\n`YYYY-MM-DD HH:MM`")
+        safe_send(call.message.chat.id, f"⏰ أرسل الوقت:\nYYYY-MM-DD HH:MM")
 
     elif act == "runnow":
         if only_staff(): return
@@ -3307,7 +3307,7 @@ def callbacks(call):
         elif tgt.startswith("ignore_"):
             target_uid = tgt[7:]
             user_chat_open.discard(target_uid)
-            safe_send(call.message.chat.id, f"🔕 تم تجاهل رسالة `{target_uid}`.")
+            safe_send(call.message.chat.id, f"🔕 تم تجاهل رسالة {target_uid}.")
 
         elif tgt.startswith("unblock_"):
             target_uid = tgt[8:]
@@ -3317,7 +3317,7 @@ def callbacks(call):
                 save()
             name = db["users"].get(target_uid, {}).get("name", "؟")
             bot.answer_callback_query(call.id, f"✅ رُفع حظر {name}")
-            safe_send(call.message.chat.id, f"✅ تم رفع حظر التواصل عن *{name}*.")
+            safe_send(call.message.chat.id, f"✅ تم رفع حظر التواصل عن {name}.")
 
         elif tgt.startswith("block_"):
             target_uid = tgt[6:]
@@ -3385,11 +3385,11 @@ def run_shell(chat_id, cmd):
         out = (r.stdout+r.stderr).strip() or "(لا يوجد output)"
         db["stats"]["commands"] = db["stats"].get("commands",0)+1; save()
         if len(out)>3500: out=out[-3500:]+"\n...(مقطوع)"
-        safe_send(chat_id, f"```\n{out}\n```")
+        safe_send(chat_id, f"\n{out}\n")
     except subprocess.TimeoutExpired:
         safe_send(chat_id,"⏱ 30 ثانية انتهت")
     except Exception as e:
-        safe_send(chat_id, f"❌ `{e}`")
+        safe_send(chat_id, f"❌ {e}")
 
 # ══════════════════════════════════════════════════════════════
 #  المعالج الرئيسي
@@ -3408,7 +3408,7 @@ def handle_photo(m):
         target = admin_chat_with[uid]
         name = db["users"].get(target, {}).get("name", "؟")
         ok = _send_to_user(target, None, m)
-        safe_reply(m, f"✅ الصورة وصلت لـ *{name}*" if ok else f"❌ فشل")
+        safe_reply(m, f"✅ الصورة وصلت لـ {name}" if ok else f"❌ فشل")
 
 @bot.message_handler(content_types=['voice'])
 def handle_voice(m):
@@ -3424,7 +3424,7 @@ def handle_voice(m):
         target = admin_chat_with[uid]
         name = db["users"].get(target, {}).get("name", "؟")
         ok = _send_to_user(target, None, m)
-        safe_reply(m, f"✅ الصوت وصل لـ *{name}*" if ok else f"❌ فشل")
+        safe_reply(m, f"✅ الصوت وصل لـ {name}" if ok else f"❌ فشل")
 
 @bot.message_handler(func=lambda m: True)
 def main_handler(m):
@@ -3452,7 +3452,7 @@ def main_handler(m):
             admin_chat_with.pop(uid, None)
             user_chat_open.discard(target)
             name = db["users"].get(target, {}).get("name", "؟")
-            safe_reply(m, f"✅ انتهت المحادثة مع *{name}*.", reply_markup=get_kb(uid))
+            safe_reply(m, f"✅ انتهت المحادثة مع {name}.", reply_markup=get_kb(uid))
             try:
                 safe_send(int(target),
                     "🔚 الأدمن أنهى المحادثة.\nلو عندك استفسار اضغط 🎫 تذكرة دعم.",
@@ -3463,9 +3463,9 @@ def main_handler(m):
         name = db["users"].get(target, {}).get("name", "؟")
         ok = _send_to_user(target, text, m)
         if ok:
-            safe_reply(m, f"✅ وصلت لـ *{name}*")
+            safe_reply(m, f"✅ وصلت لـ {name}")
         else:
-            safe_reply(m, f"❌ فشل الإرسال لـ `{target}` — ربما حذف البوت")
+            safe_reply(m, f"❌ فشل الإرسال لـ {target} — ربما حذف البوت")
             admin_chat_with.pop(uid, None)
         return
 
@@ -3479,7 +3479,7 @@ def main_handler(m):
                 if t_uid == uid:
                     admin_chat_with.pop(a_uid, None)
                     name = db["users"].get(uid, {}).get("name", "؟")
-                    try: safe_send(int(a_uid), f"🔚 *{name}* أنهى المحادثة.", reply_markup=get_kb(a_uid))
+                    try: safe_send(int(a_uid), f"🔚 {name} أنهى المحادثة.", reply_markup=get_kb(a_uid))
                     except: pass
             return
         # إرسال للأدمن
@@ -3564,9 +3564,9 @@ def main_handler(m):
             if "=" in text:
                 k,v = text.split("=",1)
                 db.setdefault("envs",{}).setdefault(state["file"],{})[k.strip()] = v.strip(); save()
-                safe_reply(m, f"✅ `{k.strip()}={v.strip()}`")
+                safe_reply(m, f"✅ {k.strip()}={v.strip()}")
             else:
-                safe_reply(m,"❌ الصيغة: `KEY=VALUE`")
+                safe_reply(m,"❌ الصيغة: KEY=VALUE")
 
         elif act == "pip_install":
             def do_pip():
@@ -3577,19 +3577,19 @@ def main_handler(m):
             try:
                 datetime.strptime(text.strip(),"%Y-%m-%d %H:%M")
                 db.setdefault("scheduled",[]).append({"name":state["file"],"run_at":text.strip(),"done":False}); save()
-                safe_reply(m, f"⏰ جُدوِل `{state['file']}` في `{text.strip()}`")
+                safe_reply(m, f"⏰ جُدوِل {state['file']} في {text.strip()}")
             except:
-                safe_reply(m,"❌ الصيغة: `YYYY-MM-DD HH:MM`")
+                safe_reply(m,"❌ الصيغة: YYYY-MM-DD HH:MM")
 
         elif act == "broadcast":
             if not is_staff(uid): return
             count = 0
             for u in list(db["users"].keys()):
                 try:
-                    bot.send_message(int(u), f"📢 *رسالة من الإدارة:*\n{text}")
+                    bot.send_message(int(u), f"📢 رسالة من الإدارة:\n{text}")
                     count += 1; time.sleep(0.05)
                 except: pass
-            safe_reply(m, f"📢 *أُرسلت لـ {count} مستخدم.*")
+            safe_reply(m, f"📢 أُرسلت لـ {count} مستخدم.")
 
         elif act == "check_ip":
             def do_ip():
@@ -3609,7 +3609,7 @@ def main_handler(m):
                             f"🕐 التوقيت: `{data.get('timezone')}`\n"
                             f"📍 {data.get('lat')}, {data.get('lon')}")
                     else:
-                        safe_reply(m, f"❌ مش قادر يفحص `{target}`")
+                        safe_reply(m, f"❌ مش قادر يفحص {target}")
                 except Exception as e:
                     safe_reply(m, f"❌ خطأ: {str(e)[:200]}")
             executor.submit(do_ip)
@@ -3648,7 +3648,7 @@ def main_handler(m):
                 safe_reply(m, "❌ فشل الإرسال")
             parts = text.strip().split(maxsplit=2)
             if len(parts) < 2:
-                safe_reply(m, "❌ الصيغة: `ID النقطة السبب`"); return
+                safe_reply(m, "❌ الصيغة: ID النقطة السبب"); return
             target_uid = parts[0]
             try:
                 amount = int(parts[1])
@@ -3692,7 +3692,7 @@ def main_handler(m):
                     # انتهى التعديل — اعرض أزرار الرفع
                     _show_edit_done(m, fname, "✅ تم تعديل التوكن بنجاح!")
             else:
-                safe_reply(m, f"❌ فشل تعديل التوكن:\n`{msg_result}`")
+                safe_reply(m, f"❌ فشل تعديل التوكن:\n{msg_result}")
                 user_states[uid] = state
 
         elif act == "edit_admin_id":
@@ -3711,7 +3711,7 @@ def main_handler(m):
                 label = "✅ تم تعديل التوكن والـ ID بنجاح!" if from_both else "✅ تم تعديل الـ ID بنجاح!"
                 _show_edit_done(m, fname, label)
             else:
-                safe_reply(m, f"❌ فشل تعديل الـ ID:\n`{msg_result}`")
+                safe_reply(m, f"❌ فشل تعديل الـ ID:\n{msg_result}")
                 user_states[uid] = state
 
         elif act == "bcast_with_file":
@@ -3815,9 +3815,9 @@ def main_handler(m):
                     if old_name in running_procs:
                         running_procs[new_name] = running_procs.pop(old_name)
                     save()
-                    safe_reply(m, f"✅ تم تغيير الاسم:\n`{old_name}` ← `{new_name}`")
+                    safe_reply(m, f"✅ تم تغيير الاسم:\n{old_name} ← {new_name}")
                 except Exception as e:
-                    safe_reply(m, f"❌ `{e}`")
+                    safe_reply(m, f"❌ {e}")
 
         elif act.startswith("panel_"):
             if not is_staff(uid): return
@@ -4089,7 +4089,7 @@ def main_handler(m):
                 f"{role_e} {info.get('name','؟')[:15]}",
                 callback_data=f"chat_reply_{u}"
             ))
-        safe_reply(m, "💬 *اختر المستخدم اللي عايز تكلمه:*", reply_markup=mk2)
+        safe_reply(m, "💬 اختر المستخدم اللي عايز تكلمه:", reply_markup=mk2)
         return
 
     if text == "🔕 المحظورون من التواصل":
@@ -4129,7 +4129,7 @@ def main_handler(m):
     elif text == "💀 إيقاف الكل":
         c = kill_all_procs()
         db["stats"]["kills"] = db["stats"].get("kills",0)+1; save()
-        safe_reply(m, f"💀 *أُوقفت {c} عملية بالقوة.*")
+        safe_reply(m, f"💀 أُوقفت {c} عملية بالقوة.")
 
     elif text == "📡 موارد السيرفر":
         _server_stats(m)
@@ -4141,7 +4141,7 @@ def main_handler(m):
                 lines = f.readlines()[-25:]
             out = "".join(lines)
             if len(out)>3800: out=out[-3800:]
-            safe_reply(m, f"```\n{out}\n```")
+            safe_reply(m, f"\n{out}\n")
 
     elif text == "📊 الإحصائيات":
         s = db["stats"]
@@ -4175,13 +4175,13 @@ def main_handler(m):
             shutil.rmtree("ELITE_HOST"); os.makedirs("ELITE_HOST",exist_ok=True)
             db["files"].clear(); save()
         except Exception as e: log.error(f"Clean: {e}")
-        safe_reply(m,"🧹 *تم التطهير.*")
+        safe_reply(m,"🧹 تم التطهير.")
 
     elif text == "🖥️ Shell":
         mk = types.ReplyKeyboardMarkup(resize_keyboard=True)
         mk.add("❌ خروج Shell")
         shell_mode.add(uid)
-        safe_reply(m,"🖥️ *Shell نشط* — اكتب أي أمر Linux.", reply_markup=mk)
+        safe_reply(m,"🖥️ Shell نشط — اكتب أي أمر Linux.", reply_markup=mk)
 
     elif text == "📁 الملفات":
         files = os.listdir("ELITE_HOST")
@@ -4191,12 +4191,12 @@ def main_handler(m):
         mk = types.InlineKeyboardMarkup()
         for f in files[:8]:
             mk.add(types.InlineKeyboardButton(f"📥 {f}", callback_data=f"dwn_{f}"))
-        safe_reply(m,"📁 *ELITE\\_HOST:*\n"+"\n".join(lines), reply_markup=mk)
+        safe_reply(m,"📁 ELITE\\_HOST:\n"+"\n".join(lines), reply_markup=mk)
 
     elif text == "⏰ المجدولة":
         tasks = [t for t in db.get("scheduled",[]) if not t.get("done")]
         lines = [f"📄 `{t['name']}` ← `{t['run_at']}`" for t in tasks] or ["لا توجد."]
-        safe_reply(m,"⏰ *المجدولة:*\n"+"\n".join(lines))
+        safe_reply(m,"⏰ المجدولة:\n"+"\n".join(lines))
         if db["files"]:
             mk = types.InlineKeyboardMarkup()
             for n in list(db["files"].keys())[:8]:
@@ -4214,7 +4214,7 @@ def main_handler(m):
                 p=psutil.Process(info["pid"])
                 lines.append(f"📄`{n}` PID:`{info['pid']}` CPU:`{p.cpu_percent(0.1)}%` RAM:`{p.memory_info().rss//1024//1024}MB` ⏱`{h:02d}:{mn:02d}:{s:02d}`")
             except: lines.append(f"📄`{n}` ⚠️ انتهت")
-        safe_reply(m,"🔍 *العمليات:*\n\n"+"\n\n".join(lines))
+        safe_reply(m,"🔍 العمليات:\n\n"+"\n\n".join(lines))
 
     elif text == "🚨 الحجر الصحي":
         q = db.get("quarantine",[])
@@ -4241,7 +4241,7 @@ def main_handler(m):
             else:
                 safe_reply(m,"❌ لا توجد قاعدة بيانات.")
         except Exception as e:
-            safe_reply(m, f"❌ `{e}`")
+            safe_reply(m, f"❌ {e}")
 
     elif text == "📦 تثبيت مكاتب":
         if not is_staff(uid): return
@@ -4284,7 +4284,7 @@ def main_handler(m):
             safe_reply(m, "📝 لا توجد ملاحظات.")
         else:
             txt = "\n".join([f"• {n}" for n in notes[-10:]])
-            safe_reply(m, f"📝 *الملاحظات:*\n{txt}")
+            safe_reply(m, f"📝 الملاحظات:\n{txt}")
         user_states[uid] = {"action":"add_note"}
         safe_send(m.chat.id, "اكتب ملاحظة جديدة أو /skip للتخطي:")
 
@@ -4303,7 +4303,7 @@ def main_handler(m):
         locked = db.get("locked", False)
         db["locked"] = not locked; save()
         state = "🔒 مقفول" if not locked else "🔓 مفتوح"
-        safe_reply(m, f"البوت الآن: *{state}*\n{'المستخدمون الجدد لن يستطيعوا الرفع' if not locked else 'المستخدمون يستطيعون الرفع'}")
+        safe_reply(m, f"البوت الآن: {state}\n{'المستخدمون الجدد لن يستطيعوا الرفع' if not locked else 'المستخدمون يستطيعون الرفع'}")
 
     elif text == "🗑 مسح السجلات":
         if role != ROLE_OWNER: return
@@ -4311,9 +4311,9 @@ def main_handler(m):
             import glob as gl
             for f in gl.glob("LOGS/*.log"):
                 open(f,'w').close()
-            safe_reply(m, "🗑 *تم مسح كل السجلات.*")
+            safe_reply(m, "🗑 تم مسح كل السجلات.")
         except Exception as e:
-            safe_reply(m, f"❌ `{e}`")
+            safe_reply(m, f"❌ {e}")
 
     elif text == "🕐 وقت التشغيل":
         up = int(time.time() - BOT_START_TIME)
@@ -4361,7 +4361,7 @@ def main_handler(m):
                 f"⚡ التردد: {freq_txt}\n"
                 f"📊 النوى: {cores_txt}")
         except Exception as e:
-            safe_reply(m, f"❌ `{e}`")
+            safe_reply(m, f"❌ {e}")
 
     elif text == "📋 نسخ السجل":
         if not is_staff(uid): return
@@ -4839,13 +4839,14 @@ def _help(m):
             f"/health — صحة السيرفر\n"
             f"/backup — باك أب فوري\n"
             f"/stats — موارد السيرفر\n"
-            f"🖥 *لوحة التحكم:*\n"
+            f"🖥 لوحة التحكم:\n"
             f"👥 المستخدمون — إدارة كاملة\n"
             f"🔐 لوحة الأدمن — صلاحيات\n"
             f"⚙️ الإعدادات — تعديل كل شيء\n"
             f"📈 تقرير فوري — إحصائيات لحظية\n"
             f"🏆 المتصدرون — أعلى المستخدمين\n\n"
-            f"🆔 `{m.from_user.id}`")
+            f"🆔 {m.from_user.id}")
+
 
 # ══════════════════════════════════════════════════════════════
 #  التشغيل
