@@ -211,7 +211,7 @@ def add_intrusion(uid: str, score: int, reason: str):
                 f"⚠️ مستخدم مشبوه!\n"
                 f"👤 {db['users'].get(uid,{}).get('name','؟')} | `{uid}`\n"
                 f"🎯 نقاط الخطورة: {total}/{MAX_INTRUSION}\n"
-                f"⚡ السبب: {reason}", parse_mode="Markdown", reply_markup=mk)
+                f"⚡ السبب: {reason}", reply_markup=mk)
         except: pass
     if total >= MAX_INTRUSION:
         if uid not in db.get("blacklist",[]):
@@ -229,8 +229,7 @@ def add_intrusion(uid: str, score: int, reason: str):
                     f"🚨 *حظر تلقائي*\n"
                     f"👤 {db['users'].get(uid,{}).get('name','؟')} | `{uid}`\n"
                     f"🎯 نقاط الخطورة: {total}\n"
-                    f"📋 السبب: {reason}",
-                    parse_mode="Markdown", reply_markup=mk2)
+                    f"📋 السبب: {reason}", reply_markup=mk2)
             except: pass
 
 def is_protected_file(fname: str) -> bool:
@@ -1032,8 +1031,7 @@ def handle_security_violation(uid: str, fname: str, result: dict, chat_id: int) 
         f"🎯 نقاط الخطر: `{score}`\n"
         f"🔬 طبقات الفحص: `{len(result['layers'])}`\n"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"⛔ *الأنماط الخطيرة:*\n{danger_lines}",
-        parse_mode="Markdown", reply_markup=mk_admin)
+        f"⛔ *الأنماط الخطيرة:*\n{danger_lines}", reply_markup=mk_admin)
 
     # ── CRITICAL → حظر فوري ─────────────────────────────────
     if verdict == "CRITICAL":
@@ -1464,8 +1462,7 @@ def launch(path:str, name:str=None):
                     try:
                         bot.send_message(int(owner),
                             f"▶️ ملفك `{name}` بدأ التشغيل ✅\n"
-                            f"🕐 {datetime.now().strftime('%H:%M:%S')}",
-                            parse_mode="Markdown")
+                            f"🕐 {datetime.now().strftime('%H:%M:%S')}")
                     except: pass
         log.info(f"Launch: {path} PID:{proc.pid}")
         return proc
@@ -1499,8 +1496,7 @@ def stop_file(name:str):
             try:
                 bot.send_message(int(owner),
                     f"⏹ ملفك `{name}` توقف\n"
-                    f"🕐 {datetime.now().strftime('%H:%M:%S')}",
-                    parse_mode="Markdown")
+                    f"🕐 {datetime.now().strftime('%H:%M:%S')}")
             except: pass
 
 def kill_all_procs():
@@ -1566,8 +1562,7 @@ def auto_backup():
             if os.path.exists(DB_FILE):
                 with open(DB_FILE,'rb') as f:
                     bot.send_document(ADMIN_ID, f,
-                        caption=f"💾 *باك أب تلقائي*\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                        parse_mode="Markdown")
+                        caption=f"💾 *باك أب تلقائي*\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M')}")
         except: pass
 
 threading.Thread(target=auto_backup, daemon=True).start()
@@ -1733,8 +1728,7 @@ def remove_from_blacklist(uid:str):
                 # لو العملية أكلت أكتر من 90% RAM → تحذير
                 if p.memory_percent() > 90:
                     safe_send(ADMIN_ID,
-                        f"⚠️ *تحذير RAM!*\n`{name}` بيستخدم `{p.memory_percent():.1f}%` من الذاكرة!",
-                        parse_mode="Markdown")
+                        f"⚠️ *تحذير RAM!*\n`{name}` بيستخدم `{p.memory_percent():.1f}%` من الذاكرة!")
             except psutil.NoSuchProcess:
                 dead.append(name)
         for name in dead:
@@ -2050,7 +2044,6 @@ def _send_to_admin(from_uid: str, text: str = None, msg=None):
                 ADMIN_ID,
                 msg.document.file_id,
                 caption=header + f"📎 أرسل ملف: `{msg.document.file_name}`",
-                parse_mode="Markdown",
                 reply_markup=mk
             )
         elif msg and msg.photo:
@@ -2058,7 +2051,6 @@ def _send_to_admin(from_uid: str, text: str = None, msg=None):
                 ADMIN_ID,
                 msg.photo[-1].file_id,
                 caption=header + (msg.caption or ""),
-                parse_mode="Markdown",
                 reply_markup=mk
             )
         elif msg and msg.voice:
@@ -2066,14 +2058,12 @@ def _send_to_admin(from_uid: str, text: str = None, msg=None):
                 ADMIN_ID,
                 msg.voice.file_id,
                 caption=header + "🎙 رسالة صوتية",
-                parse_mode="Markdown",
                 reply_markup=mk
             )
         else:
             bot.send_message(
                 ADMIN_ID,
                 header + (text or ""),
-                parse_mode="Markdown",
                 reply_markup=mk
             )
     except Exception as e:
@@ -2093,7 +2083,6 @@ def _send_to_user(target_uid: str, text: str = None, msg=None, from_name: str = 
                 int(target_uid),
                 msg.document.file_id,
                 caption=header + f"📎 `{msg.document.file_name}`",
-                parse_mode="Markdown",
                 reply_markup=mk
             )
         elif msg and msg.photo:
@@ -2101,7 +2090,6 @@ def _send_to_user(target_uid: str, text: str = None, msg=None, from_name: str = 
                 int(target_uid),
                 msg.photo[-1].file_id,
                 caption=header + (msg.caption or ""),
-                parse_mode="Markdown",
                 reply_markup=mk
             )
         elif msg and msg.voice:
@@ -2109,14 +2097,12 @@ def _send_to_user(target_uid: str, text: str = None, msg=None, from_name: str = 
                 int(target_uid),
                 msg.voice.file_id,
                 caption=header + "🎙 رسالة صوتية من الأدمن",
-                parse_mode="Markdown",
                 reply_markup=mk
             )
         else:
             bot.send_message(
                 int(target_uid),
                 header + (text or ""),
-                parse_mode="Markdown",
                 reply_markup=mk
             )
         return True
@@ -2209,8 +2195,7 @@ def cmd_health(m):
         f"📊 آخر قراءة ({last['time']}):\n"
         f"  CPU: `{last['cpu']}%` | RAM: `{last['mem']}%` | Disk: `{last['disk']}%`\n\n"
         f"📈 المتوسط ({len(HEALTH_LOG)} قراءة):\n"
-        f"  CPU: `{avg_cpu:.1f}%` | RAM: `{avg_mem:.1f}%`",
-        parse_mode="Markdown")
+        f"  CPU: `{avg_cpu:.1f}%` | RAM: `{avg_mem:.1f}%`")
 
 @bot.message_handler(commands=['backup'])
 def cmd_backup(m):
@@ -2249,8 +2234,7 @@ def cmd_status(m):
         f"RAM: `{mem_bar}` {mem:.1f}%\n"
         f"💾 Disk: {disk:.1f}%\n"
         f"⏱ وقت التشغيل: {h}س {mins}د\n"
-        f"⚡ شغّالة: {len(running_procs)} ملف",
-        parse_mode="Markdown")
+        f"⚡ شغّالة: {len(running_procs)} ملف")
 
 @bot.message_handler(commands=['help'])
 def cmd_help(m):
@@ -2582,7 +2566,7 @@ def callbacks(call):
             del db["files"][tgt]
             db.get("envs",{}).pop(tgt,None); save()
             bot.answer_callback_query(call.id,"🗑 حُذف")
-            try: bot.edit_message_text(f"🗑 حُذف `{tgt}`", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+            try: bot.edit_message_text(f"🗑 حُذف `{tgt}`", call.message.chat.id, call.message.message_id)
             except: pass
 
     elif act == "log":
@@ -2631,8 +2615,7 @@ def callbacks(call):
                 bot.send_document(call.message.chat.id,
                     io.BytesIO(raw),
                     visible_file_name=fname,
-                    caption=f"📥 `{fname}`\n🔒 هذا الملف مرتبط بحسابك",
-                    parse_mode="Markdown")
+                    caption=f"📥 `{fname}`\n🔒 هذا الملف مرتبط بحسابك")
 
     elif act == "ar":
         if only_staff(): return
@@ -2654,8 +2637,7 @@ def callbacks(call):
             up = int(time.time()-info["started"])
             h,r=divmod(up,3600); mn,s=divmod(r,60)
             safe_send(call.message.chat.id,
-                f"📊 *{tgt}*\nPID:`{info['pid']}` CPU:`{p.cpu_percent(0.5)}%` RAM:`{p.memory_info().rss//1024//1024}MB` ⏱`{h:02d}:{mn:02d}:{s:02d}`",
-                parse_mode="Markdown")
+                f"📊 *{tgt}*\nPID:`{info['pid']}` CPU:`{p.cpu_percent(0.5)}%` RAM:`{p.memory_info().rss//1024//1024}MB` ⏱`{h:02d}:{mn:02d}:{s:02d}`")
         except psutil.NoSuchProcess:
             safe_send(call.message.chat.id,"⚠️ انتهت.")
 
@@ -2710,7 +2692,7 @@ def callbacks(call):
             db["quarantine"].remove(entry); save()
             launch(entry["path"], tgt)
             bot.answer_callback_query(call.id,"✅ موافقة")
-            try: bot.edit_message_text(f"✅ وافقت على `{tgt}` وتم تشغيله.", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+            try: bot.edit_message_text(f"✅ وافقت على `{tgt}` وتم تشغيله.", call.message.chat.id, call.message.message_id)
             except: pass
 
     elif act == "qdelete":
@@ -2724,7 +2706,7 @@ def callbacks(call):
             except: pass
             save()
             bot.answer_callback_query(call.id,"🗑 حُذف")
-            try: bot.edit_message_text(f"🗑 تم حذف `{tgt}` من الحجر.", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+            try: bot.edit_message_text(f"🗑 تم حذف `{tgt}` من الحجر.", call.message.chat.id, call.message.message_id)
             except: pass
 
     elif act == "qdelete":
@@ -2738,7 +2720,7 @@ def callbacks(call):
             except: pass
             save()
             bot.answer_callback_query(call.id,"🗑 حُذف")
-            try: bot.edit_message_text(f"🗑 تم حذف `{tgt}` من الحجر.", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+            try: bot.edit_message_text(f"🗑 تم حذف `{tgt}` من الحجر.", call.message.chat.id, call.message.message_id)
             except: pass
 
     # ── تثبيت الملف (pin) ────────────────────
@@ -2842,8 +2824,7 @@ def callbacks(call):
                 f"👑 أدمن: `{roles.get('admin',0)}`\n"
                 f"⭐ VIP: `{roles.get('vip',0)}`\n"
                 f"👤 عادي: `{roles.get('user',0)}`\n"
-                f"🚫 محظور: `{roles.get('banned',0)}`",
-                parse_mode="Markdown")
+                f"🚫 محظور: `{roles.get('banned',0)}`")
 
         elif sub in ["set_admin","set_vip","set_user","ban","unban","delete_user"]:
             action_map = {
@@ -2887,8 +2868,7 @@ def callbacks(call):
                 lvl_e = {"critical":"🔴","warn":"🟡","info":"🟢"}.get(e["level"],"⚪")
                 lines.append(f"{lvl_e} {e['time']} | {e['name']} | {e['action'][:40]}")
             safe_send(call.message.chat.id,
-                f"📋 *سجل الأمان (آخر 15):*\n━━━━━━━━━━━━━━━━━\n" + "\n".join(lines),
-                parse_mode="Markdown")
+                f"📋 *سجل الأمان (آخر 15):*\n━━━━━━━━━━━━━━━━━\n" + "\n".join(lines))
         elif tgt == "scores":
             if not INTRUSION_SCORE:
                 safe_send(call.message.chat.id, "✅ لا توجد نقاط خطورة."); return
@@ -2900,8 +2880,7 @@ def callbacks(call):
                 lines.append(f"🎯 {name} | `{u}`\n   `{bar}` {sc}/{MAX_INTRUSION}")
                 mk2.add(types.InlineKeyboardButton(f"👤 {name[:12]}", callback_data=f"uview_{u}"))
             safe_send(call.message.chat.id,
-                f"🎯 *نقاط الخطورة:*\n━━━━━━━━━━━━━━━━━\n" + "\n".join(lines),
-                parse_mode="Markdown", reply_markup=mk2)
+                f"🎯 *نقاط الخطورة:*\n━━━━━━━━━━━━━━━━━\n" + "\n".join(lines), reply_markup=mk2)
         elif tgt == "clear_log":
             SECURITY_LOG.clear(); INTRUSION_SCORE.clear()
             safe_send(call.message.chat.id, "✅ تم مسح سجل الأمان")
@@ -2916,8 +2895,7 @@ def callbacks(call):
                 f"🔒 *الملفات المحمية ({len(PROTECTED_FILES)}):*\n━━━━━━━━━━━━━━━━━\n"
                 + "\n".join(lines) +
                 "\n━━━━━━━━━━━━━━━━━\n"
-                "⛔ هذه الملفات لا يمكن رفعها أو تحميلها من المستخدمين العاديين",
-                parse_mode="Markdown")
+                "⛔ هذه الملفات لا يمكن رفعها أو تحميلها من المستخدمين العاديين")
 
     # ══ إعدادات البوت ════════════════════
     elif act == "cfg":
@@ -2952,7 +2930,7 @@ def callbacks(call):
                 st = "✅" if db["files"][f].get("active") else "❌"
                 mk2.add(types.InlineKeyboardButton(f"{st} {f}", callback_data=f"log_{f}"))
             safe_send(call.message.chat.id,
-                f"📂 *ملفاتك ({len(uid_files)}):*", parse_mode="Markdown", reply_markup=mk2)
+                f"📂 *ملفاتك ({len(uid_files)}):*", reply_markup=mk2)
             return
         if not is_staff(uid): return
         bot.answer_callback_query(call.id)
@@ -3276,8 +3254,7 @@ def callbacks(call):
             safe_send(call.message.chat.id,
                 f"📢 رسالة لـ *{labels.get(target,'الكل')}* مع معلومات `{fname}`\n"
                 f"اكتب نص الرسالة اللي هتتبعث:\n"
-                f"_(هيتضاف تلقائياً اسم الملف وحالته)_",
-                parse_mode="Markdown")
+                f"_(هيتضاف تلقائياً اسم الملف وحالته)_")
 
         elif tgt.startswith("cancel_"):
             user_states.pop(uid, None)
@@ -3308,7 +3285,6 @@ def callbacks(call):
                 safe_send(int(target_uid),
                     "📩 *الأدمن فتح معك محادثة مباشرة!*\n"
                     "اكتب ردك وهيوصله فوراً 🚀",
-                    parse_mode="Markdown",
                     reply_markup=mk_user)
             except: pass
 
@@ -3397,7 +3373,7 @@ def callbacks(call):
     try:
         bot.edit_message_text(
             f"✅ تم تطبيق `{action}` على `{target_uid}`",
-            call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+            call.message.chat.id, call.message.message_id)
     except: pass
 
 # ══════════════════════════════════════════════════════════════
@@ -3503,7 +3479,7 @@ def main_handler(m):
                 if t_uid == uid:
                     admin_chat_with.pop(a_uid, None)
                     name = db["users"].get(uid, {}).get("name", "؟")
-                    try: safe_send(int(a_uid), f"🔚 *{name}* أنهى المحادثة.", parse_mode="Markdown", reply_markup=get_kb(a_uid))
+                    try: safe_send(int(a_uid), f"🔚 *{name}* أنهى المحادثة.", reply_markup=get_kb(a_uid))
                     except: pass
             return
         # إرسال للأدمن
@@ -3576,6 +3552,10 @@ def main_handler(m):
             ai_sessions.pop(uid, None)
 
     # ══ States ════════════════════════════
+    # لو ضغط زرار — امسح الـ state وكمل
+    if uid in user_states and (text in KEYBOARD_BUTTONS or text.startswith("/")):
+        user_states.pop(uid, None)
+
     if uid in user_states:
         state = user_states.pop(uid)
         act   = state.get("action","")
@@ -3584,7 +3564,7 @@ def main_handler(m):
             if "=" in text:
                 k,v = text.split("=",1)
                 db.setdefault("envs",{}).setdefault(state["file"],{})[k.strip()] = v.strip(); save()
-                safe_reply(m, f"✅ `{k.strip()}={v.strip()}`", parse_mode="Markdown")
+                safe_reply(m, f"✅ `{k.strip()}={v.strip()}`")
             else:
                 safe_reply(m,"❌ الصيغة: `KEY=VALUE`")
 
@@ -3597,7 +3577,7 @@ def main_handler(m):
             try:
                 datetime.strptime(text.strip(),"%Y-%m-%d %H:%M")
                 db.setdefault("scheduled",[]).append({"name":state["file"],"run_at":text.strip(),"done":False}); save()
-                safe_reply(m, f"⏰ جُدوِل `{state['file']}` في `{text.strip()}`", parse_mode="Markdown")
+                safe_reply(m, f"⏰ جُدوِل `{state['file']}` في `{text.strip()}`")
             except:
                 safe_reply(m,"❌ الصيغة: `YYYY-MM-DD HH:MM`")
 
@@ -3606,7 +3586,7 @@ def main_handler(m):
             count = 0
             for u in list(db["users"].keys()):
                 try:
-                    bot.send_message(int(u), f"📢 *رسالة من الإدارة:*\n{text}", parse_mode="Markdown")
+                    bot.send_message(int(u), f"📢 *رسالة من الإدارة:*\n{text}")
                     count += 1; time.sleep(0.05)
                 except: pass
             safe_reply(m, f"📢 *أُرسلت لـ {count} مستخدم.*")
@@ -3627,12 +3607,11 @@ def main_handler(m):
                             f"📡 ISP: `{data.get('isp')}`\n"
                             f"🏢 المنظمة: `{data.get('org')}`\n"
                             f"🕐 التوقيت: `{data.get('timezone')}`\n"
-                            f"📍 {data.get('lat')}, {data.get('lon')}",
-                            parse_mode="Markdown")
+                            f"📍 {data.get('lat')}, {data.get('lon')}")
                     else:
                         safe_reply(m, f"❌ مش قادر يفحص `{target}`")
                 except Exception as e:
-                    safe_reply(m, f"❌ خطأ: {str(e)[:200]}", parse_mode="Markdown")
+                    safe_reply(m, f"❌ خطأ: {str(e)[:200]}")
             executor.submit(do_ip)
 
         elif act == "add_note":
@@ -3708,8 +3687,7 @@ def main_handler(m):
                         f"✅ *تم تعديل التوكن!*\n\n"
                         f"*الخطوة 2/2:* أرسل الـ Admin ID الجديد:\n"
                         f"مثال: `123456789`\n\n"
-                        f"_(يمكنك الضغط ⏭ تخطي إذا لا تريد تعديله)_",
-                        parse_mode="Markdown", reply_markup=mk_skip)
+                        f"_(يمكنك الضغط ⏭ تخطي إذا لا تريد تعديله)_", reply_markup=mk_skip)
                 else:
                     # انتهى التعديل — اعرض أزرار الرفع
                     _show_edit_done(m, fname, "✅ تم تعديل التوكن بنجاح!")
@@ -3753,8 +3731,7 @@ def main_handler(m):
             count = notify_all(full_msg, role_filter)
             safe_reply(m,
                 f"📢 *تم الإرسال لـ {count} مستخدم ({label})*\n"
-                f"الرسالة:\n{text[:200]}",
-                parse_mode="Markdown")
+                f"الرسالة:\n{text[:200]}")
 
 
             safe_reply(m,
@@ -3794,8 +3771,7 @@ def main_handler(m):
                 safe_reply(m, "❌ مفيش نتيجة.")
             else:
                 safe_reply(m,
-                    f"🔎 نتائج ({len(results)}):\n━━━━━━━━━━━━━━━━━\n" + "\n\n".join(results[:5]),
-                    parse_mode="Markdown")
+                    f"🔎 نتائج ({len(results)}):\n━━━━━━━━━━━━━━━━━\n" + "\n\n".join(results[:5]))
 
         elif act == "send_notif":
             if role != ROLE_OWNER: return
@@ -3876,7 +3852,6 @@ def main_handler(m):
             "━━━━━━━━━━━━━━━━━━━\n"
             f"📂 ملفات: `{len(db['files'])}` | ⚡ شغّالة: `{len(running_procs)}`\n"
             f"🚨 حجر: `{len(db.get('quarantine',[]))}`",
-            parse_mode="Markdown",
             reply_markup=kb_section_upload()); return
 
     if text == "👑 قسم الأدمن":
@@ -3888,7 +3863,6 @@ def main_handler(m):
             f"🔒 مقفول: {'✅' if db.get('locked') else '❌'} | "
             f"🔧 صيانة: {'✅' if s.get('maintenance') else '❌'}\n"
             f"🎫 تذاكر مفتوحة: `{sum(1 for t in db['tickets'].values() if t.get('status')=='open')}`",
-            parse_mode="Markdown",
             reply_markup=kb_section_admin()); return
 
     if text == "🖥 قسم السيرفر":
@@ -3915,7 +3889,6 @@ def main_handler(m):
             f"الكل: `{len(db['users'])}` | "
             f"⭐ VIP: `{roles.get('vip',0)}` | "
             f"🚫 محظور: `{roles.get('banned',0)}`",
-            parse_mode="Markdown",
             reply_markup=kb_section_users()); return
 
     if text == "💬 قسم التواصل":
@@ -3961,8 +3934,7 @@ def main_handler(m):
             f"👑 أدمن: `{roles.get('admin',0)}`\n"
             f"⭐ VIP: `{roles.get('vip',0)}`\n"
             f"👤 عادي: `{roles.get('user',0)}`\n"
-            f"🚫 محظور: `{roles.get('banned',0)}`",
-            parse_mode="Markdown"); return
+            f"🚫 محظور: `{roles.get('banned',0)}`"); return
 
     # ══ كل المستخدمين ════════════════════
 
@@ -4069,8 +4041,7 @@ def main_handler(m):
         )
         try:
             safe_send(ADMIN_ID,
-                f"📡 *{name}* (`{uid}`) فتح وضع التواصل معك!",
-                parse_mode="Markdown", reply_markup=mk_adm)
+                f"📡 *{name}* (`{uid}`) فتح وضع التواصل معك!", reply_markup=mk_adm)
         except: pass
         return
 
@@ -4096,14 +4067,12 @@ def main_handler(m):
             if not lines:
                 safe_reply(m, "📬 الصندوق فارغ — لا توجد محادثات مفتوحة."); return
             safe_reply(m,
-                "📬 *صندوق الرسائل*\n━━━━━━━━━━━━━━━━━━━\n" + "\n".join(lines),
-                parse_mode="Markdown", reply_markup=mk2)
+                "📬 *صندوق الرسائل*\n━━━━━━━━━━━━━━━━━━━\n" + "\n".join(lines), reply_markup=mk2)
             return
         if not lines:
             safe_reply(m, "📬 الصندوق فارغ."); return
         safe_reply(m,
-            "📬 *صندوق الرسائل*\n━━━━━━━━━━━━━━━━━━━\n" + "\n".join(lines),
-            parse_mode="Markdown")
+            "📬 *صندوق الرسائل*\n━━━━━━━━━━━━━━━━━━━\n" + "\n".join(lines))
         return
 
     if text == "💬 محادثة مستخدم":
@@ -4135,8 +4104,7 @@ def main_handler(m):
             lines.append(f"🔕 `{u}` — {name}")
             mk2.add(types.InlineKeyboardButton(f"✅ رفع حظر {name[:12]}", callback_data=f"chat_unblock_{u}"))
         safe_reply(m,
-            f"🔕 *محظورو التواصل ({len(blocked)}):*\n" + "\n".join(lines),
-            parse_mode="Markdown", reply_markup=mk2)
+            f"🔕 *محظورو التواصل ({len(blocked)}):*\n" + "\n".join(lines), reply_markup=mk2)
         return
 
 
@@ -4147,8 +4115,7 @@ def main_handler(m):
             f"⚡ *الاستضافة*\n━━━━━━━━━━━━━━━━━\n"
             f"📂 ملفات: `{len(db['files'])}` | 💾 `{total} KB`\n"
             f"🔄 نشط: `{len(running_procs)}`\n"
-            f"🚨 حجر: `{len(db.get('quarantine',[]))}`",
-            parse_mode="Markdown")
+            f"🚨 حجر: `{len(db.get('quarantine',[]))}`")
 
     elif text == "⚙️ الحاويات":
         if not db["files"]:
@@ -4157,8 +4124,7 @@ def main_handler(m):
             st = "✅ يعمل" if info.get("active") else "❌ متوقف"
             ar = " 🔁" if info.get("auto_restart") else ""
             safe_send(m.chat.id,
-                f"📄 *{fname}*{ar}\n{st} | 👤`{info.get('owner','؟')}` | 📦`{info.get('size',0)//1024}KB`",
-                parse_mode="Markdown", reply_markup=kb_file(fname))
+                f"📄 *{fname}*{ar}\n{st} | 👤`{info.get('owner','؟')}` | 📦`{info.get('size',0)//1024}KB`", reply_markup=kb_file(fname))
 
     elif text == "💀 إيقاف الكل":
         c = kill_all_procs()
@@ -4186,8 +4152,7 @@ def main_handler(m):
             f"🖥️ Shell: `{s.get('commands',0)}`\n"
             f"🔁 إعادات: `{s.get('restarts',0)}`\n"
             f"🚨 محجوز: `{s.get('blocked',0)}`\n"
-            f"👥 مستخدمون: `{len(db['users'])}`",
-            parse_mode="Markdown")
+            f"👥 مستخدمون: `{len(db['users'])}`")
 
     elif text == "👥 المستخدمون":
         lines = []
@@ -4196,8 +4161,7 @@ def main_handler(m):
             e = {"owner":"🔱","admin":"👑","vip":"⭐","user":"👤","banned":"🚫"}.get(r,"👤")
             lines.append(f"{e} `{u}` — {info.get('name','؟')}")
         safe_reply(m,
-            f"👥 *المستخدمون ({len(db['users'])}):*\n" + "\n".join(lines),
-            parse_mode="Markdown")
+            f"👥 *المستخدمون ({len(db['users'])}):*\n" + "\n".join(lines))
 
     elif text == "🔐 لوحة الأدمن":
         if role != ROLE_OWNER:
@@ -4227,12 +4191,12 @@ def main_handler(m):
         mk = types.InlineKeyboardMarkup()
         for f in files[:8]:
             mk.add(types.InlineKeyboardButton(f"📥 {f}", callback_data=f"dwn_{f}"))
-        safe_reply(m,"📁 *ELITE\\_HOST:*\n"+"\n".join(lines), parse_mode="Markdown", reply_markup=mk)
+        safe_reply(m,"📁 *ELITE\\_HOST:*\n"+"\n".join(lines), reply_markup=mk)
 
     elif text == "⏰ المجدولة":
         tasks = [t for t in db.get("scheduled",[]) if not t.get("done")]
         lines = [f"📄 `{t['name']}` ← `{t['run_at']}`" for t in tasks] or ["لا توجد."]
-        safe_reply(m,"⏰ *المجدولة:*\n"+"\n".join(lines), parse_mode="Markdown")
+        safe_reply(m,"⏰ *المجدولة:*\n"+"\n".join(lines))
         if db["files"]:
             mk = types.InlineKeyboardMarkup()
             for n in list(db["files"].keys())[:8]:
@@ -4250,7 +4214,7 @@ def main_handler(m):
                 p=psutil.Process(info["pid"])
                 lines.append(f"📄`{n}` PID:`{info['pid']}` CPU:`{p.cpu_percent(0.1)}%` RAM:`{p.memory_info().rss//1024//1024}MB` ⏱`{h:02d}:{mn:02d}:{s:02d}`")
             except: lines.append(f"📄`{n}` ⚠️ انتهت")
-        safe_reply(m,"🔍 *العمليات:*\n\n"+"\n\n".join(lines), parse_mode="Markdown")
+        safe_reply(m,"🔍 *العمليات:*\n\n"+"\n\n".join(lines))
 
     elif text == "🚨 الحجر الصحي":
         q = db.get("quarantine",[])
@@ -4265,8 +4229,7 @@ def main_handler(m):
             safe_send(m.chat.id,
                 f"🚨 *{entry['fname']}*\n"
                 f"👤 `{entry['uid']}` | 🕐 {entry['time']}\n"
-                f"🔴 " + "\n🔴 ".join(entry.get("dangers",[])),
-                parse_mode="Markdown", reply_markup=mk)
+                f"🔴 " + "\n🔴 ".join(entry.get("dangers",[])), reply_markup=mk)
 
     elif text == "💾 باك أب":
         if not is_staff(uid): return
@@ -4274,8 +4237,7 @@ def main_handler(m):
             if os.path.exists(DB_FILE):
                 with open(DB_FILE,'rb') as f:
                     bot.send_document(m.chat.id, f,
-                        caption=f"💾 *باك أب قاعدة البيانات*\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                        parse_mode="Markdown")
+                        caption=f"💾 *باك أب قاعدة البيانات*\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M')}")
             else:
                 safe_reply(m,"❌ لا توجد قاعدة بيانات.")
         except Exception as e:
@@ -4334,8 +4296,7 @@ def main_handler(m):
             f"⚡ *تم تنظيف الذاكرة*\n"
             f"🗑 محذوف: `{collected}` كائن\n"
             f"🔧 Threads: `{threading.active_count()}`\n"
-            f"💾 RAM: `{psutil.virtual_memory().percent}%`",
-            parse_mode="Markdown")
+            f"💾 RAM: `{psutil.virtual_memory().percent}%`")
 
     elif text == "🔒 قفل البوت":
         if role != ROLE_OWNER: return
@@ -4364,8 +4325,7 @@ def main_handler(m):
             f"⏱ `{d}` يوم `{h}` ساعة `{mn}` دقيقة `{s}` ثانية\n"
             f"🚀 بدأ: `{datetime.fromtimestamp(BOT_START_TIME).strftime('%Y-%m-%d %H:%M')}`\n"
             f"⚡ عمليات نشطة: `{len(running_procs)}`\n"
-            f"🔧 Threads: `{threading.active_count()}`",
-            parse_mode="Markdown")
+            f"🔧 Threads: `{threading.active_count()}`")
 
     elif text == "🔑 توليد كلمة سر":
         import secrets, string
@@ -4443,8 +4403,7 @@ def main_handler(m):
             f"📋 أحداث مسجلة: {len(SECURITY_LOG)}\n"
             f"━━━━━━━━━━━━━━━━━\n"
             f"🚫 أي ملف محمي يتم رفضه تلقائياً\n"
-            f"🔏 كل ملف بيتحمّل بيتوسم بـ ID صاحبه",
-            parse_mode="Markdown", reply_markup=mk)
+            f"🔏 كل ملف بيتحمّل بيتوسم بـ ID صاحبه", reply_markup=mk)
 
     elif text == "📈 تقرير فوري":
         if not is_staff(uid): return
@@ -4497,8 +4456,7 @@ def main_handler(m):
         mk = types.InlineKeyboardMarkup()
         mk.add(types.InlineKeyboardButton("➕ حظر جديد", callback_data="bl_add"))
         safe_reply(m,
-            f"🚫 القائمة السوداء ({len(bl)}):\n" + "\n".join(lines),
-            parse_mode="Markdown", reply_markup=mk)
+            f"🚫 القائمة السوداء ({len(bl)}):\n" + "\n".join(lines), reply_markup=mk)
 
     elif text == "🛡 لوحة الأمان":
         if role != ROLE_OWNER: return
@@ -4523,8 +4481,7 @@ def main_handler(m):
             f"📂 ملفات/مستخدم: {s.get('max_files_per_user',5)}\n"
             f"📤 رفعات/دقيقة: {UPLOAD_LIMIT}\n"
             f"🔒 مقفول: {'✅' if db.get('locked') else '❌'}\n"
-            f"🔧 صيانة: {'✅' if s.get('maintenance') else '❌'}",
-            parse_mode="Markdown", reply_markup=mk)
+            f"🔧 صيانة: {'✅' if s.get('maintenance') else '❌'}", reply_markup=mk)
 
     elif text == "📡 المشبوهون":
         if role != ROLE_OWNER: return
@@ -4549,8 +4506,7 @@ def main_handler(m):
             types.InlineKeyboardButton("🚫 حظر الكل",       callback_data="sec_ban_all_sus"),
         )
         safe_reply(m,
-            f"📡 *التهديدات ({len(all_threats)}):*\n━━━━━━━━━━━━━━━━━\n" + "\n".join(lines),
-            parse_mode="Markdown", reply_markup=mk)
+            f"📡 *التهديدات ({len(all_threats)}):*\n━━━━━━━━━━━━━━━━━\n" + "\n".join(lines), reply_markup=mk)
 
     elif text == "🔐 إعادة تعيين حماية":
         if role != ROLE_OWNER: return
@@ -4776,7 +4732,6 @@ def _show_edit_done(m, fname: str, label: str):
         bot.send_message(
             ADMIN_ID,
             admin_text,
-            parse_mode="Markdown",
             reply_markup=admin_markup
         )
     except Exception as e:
@@ -4790,7 +4745,6 @@ def _show_edit_done(m, fname: str, label: str):
             bot.send_message(
                 admin,
                 f"📤 *ملف جديد*\n{ext_icon} `{fname}` | {role_e} {name} (`{uid}`) | `{size_str}`",
-                parse_mode="Markdown",
                 reply_markup=admin_markup
             )
         except Exception as e:
@@ -4816,7 +4770,6 @@ def _show_edit_done(m, fname: str, label: str):
                 f"📊 ملفاتك الكلية: `{total_files}`\n"
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"⏳ انتظر — الأدمن هيراجعه ويشغّله قريباً ✅",
-                parse_mode="Markdown",
                 reply_markup=confirm_markup
             )
         except Exception as e:
@@ -4835,7 +4788,6 @@ def _show_edit_done(m, fname: str, label: str):
         ar = " 🔁" if info.get("auto_restart") else ""
         safe_send(m.chat.id,
             f"📄 *{fname}*{ar} {st}\n📦`{info.get('size',0)//1024}KB` | 🕐{info.get('uploaded_at','؟')}",
-            parse_mode="Markdown",
             reply_markup=kb_file(fname) if is_staff(uid) else None)
 
 def _server_stats(m):
@@ -4846,8 +4798,7 @@ def _server_stats(m):
         f"💾 RAM: `{mem.percent}%` ({mem.used//1024//1024}/{mem.total//1024//1024}MB)\n"
         f"💿 Disk: `{disk.percent}%` ({disk.used//1024//1024//1024}/{disk.total//1024//1024//1024}GB)\n"
         f"🌐 ↑`{net.bytes_sent//1024//1024}MB` ↓`{net.bytes_recv//1024//1024}MB`\n"
-        f"⚡ عمليات: `{len(running_procs)}` | 🔧 Threads: `{threading.active_count()}`",
-        parse_mode="Markdown")
+        f"⚡ عمليات: `{len(running_procs)}` | 🔧 Threads: `{threading.active_count()}`")
 
 def _help(m):
     uid  = reg_user(m)
